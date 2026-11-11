@@ -1,0 +1,36 @@
+{
+  "name": "sidekick-desktop",
+  "productName": "Sidekick",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "main": "dist/main.cjs",
+  "engines": {
+    "node": ">=24.15"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev": "node scripts/build.mjs && electron .",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.ts",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "oauth4webapi": "^3.8.8",
+    "openai": "^7.54.0",
+    "playwright": "^1.65.0",
+    "react": "^19",
+    "react-dom": "^19",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "electron": "45.2.3",
+    "esbuild": "^0.28",
+    "typescript": "^6"
+  }
+}
