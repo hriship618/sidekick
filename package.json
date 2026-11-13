@@ -20,6 +20,7 @@
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.ts",
     "test:overlay": "pnpm build && node scripts/check-overlay.mjs",
     "test:drag": "pnpm build && node scripts/check-native-drag.mjs",
+    "benchmark": "pnpm build && node --disable-warning=ExperimentalWarning scripts/benchmark.ts",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
   "build": {

@@ -6,7 +6,8 @@ import type { Store } from './store.ts';
 import type { createRegistry } from './tools.ts';
 import { ExecutionPolicy } from './execution-policy.ts';
 import { routineActions } from './workflow.ts';
-import { desktopInput } from './windows-desktop.ts';
+import { desktopInput, DesktopExecutionError } from './windows-desktop.ts';
+import { compressShellData, TrajectoryCompressor } from './trajectory.ts';
 
 type Registry = ReturnType<typeof createRegistry>;
 export type AgentServices = { configured(): boolean; model(settings: Settings): Promise<AgentModel>; browser: BrowserSession; fastDesktop?: boolean };
@@ -98,11 +99,13 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
   let browserEnabled = /\b(browser|site|website|webpage|page|click|form|search|read|inspect|login|sign in|navigate|https?)\b/i.test(command);
   const policy = new ExecutionPolicy(command, ask);
   const available = () => [
-    ...Object.entries(controls).filter(([name]) => name !== 'enable_browser' || !browserEnabled).map(([name, schema]) => tool(name, schema)),
+    ...Object.entries(controls).map(([name, schema]) => tool(name, schema)),
     ...Object.entries(registry).filter(([name]) => name !== 'desktop' || settings.desktopAccess).map(([name, entry]) => tool(name, entry.input)),
     tool('batch', batchSchema),
-    ...(browserEnabled ? Object.entries(browserActions).map(([name, schema]) => tool(name, schema)) : []),
+    ...Object.entries(browserActions).map(([name, schema]) => tool(name, schema)),
   ];
+  // Freeze the catalog for this run. Runtime policy still gates desktop/browser execution.
+  const definitions = available();
   const answers: { question: string; answer: string }[] = [];
   const ledger: string[] = [];
   let previous: Exchange | undefined;
@@ -130,7 +133,8 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
       compact = { ...data, windows: [...data.windows].sort((a, b) => score(b) - score(a)).slice(0, 12), total: data.total ?? data.windows.length };
     }
     const full = JSON.stringify(data);
-    const evidenceId = full.length > 4000 || JSON.stringify(compact) !== full ? store.saveEvidence(id, 'text', Buffer.from(full)) : undefined;
+    let evidenceId = full.length > 4000 || JSON.stringify(compact) !== full ? store.saveEvidence(id, 'text', Buffer.from(full)) : undefined;
+    compact = compressShellData(compact, () => evidenceId ??= store.saveEvidence(id, 'text', Buffer.from(full)));
     const outcome: Outcome = JSON.stringify(compact).length <= 5000
       ? { ok: true, ...result, data: compact, ...(evidenceId ? { evidenceId } : {}) }
       : { ok: true, verification: result.verification, message: result.message, evidenceId: evidenceId ?? store.saveEvidence(id, 'text', Buffer.from(full)), excerpt: JSON.stringify(compact).slice(0, 3000), more: 'Use read_evidence for the rest of this result.' };
@@ -173,6 +177,7 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
       let result: ToolResult;
       let extra: Omit<BrowserEvidence, 'data' | 'message'> & { evidenceId?: number } = {};
       if (Object.hasOwn(browserActions, name)) {
+        if (!browserEnabled) throw new Error('The browser is not enabled for this task. Call enable_browser before using browser actions.');
         const kind = name as keyof typeof browserActions;
         browserActions[kind].parse(args);
         const { data, message, ...observed } = await browser.execute(kind, args, signal, effect => policy.authorize(effect));
@@ -211,6 +216,10 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
       failures.set(fingerprint, { count: (failures.get(fingerprint)?.count ?? 0) + 1, message });
       store.updateStep(id, step, 'failed', undefined, message);
       outcome = { ok: false, message, ...(Object.hasOwn(browserActions, name) ? { url: browser.location() } : {}) };
+      if (error instanceof DesktopExecutionError) {
+        const evidenceId = store.saveEvidence(id, 'text', Buffer.from(JSON.stringify(error.result.data)));
+        outcome = { ...outcome, evidenceId, data: compressShellData(error.result.data, () => evidenceId) };
+      }
     }
     ledger.push(`${name}: ${outcome.message}${outcome.evidenceId ? ` (evidence ${outcome.evidenceId})` : ''}`);
     store.trace(id, 'result', { name, outcome });
@@ -232,12 +241,14 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
   for (let turn = 0; turn < 24; turn++) {
     signal.throwIfAborted();
     phase('Planning the next step');
-    const definitions = available();
-    const context = JSON.stringify({ goal: command, constraints: policy.constraints(), userAnswers: answers, actionLedger: ledger,
+    const context = JSON.stringify({ goal: command, constraints: policy.constraints(), userAnswers: answers, actionLedger: ledger.slice(-6),
+      completedActionCount: successes, earlierActionsOmitted: Math.max(0, ledger.length - 6),
       desktopObservations: [...desktopObservations.values()],
-      browserLocation: browserEnabled ? browser.location() : undefined });
+      browserLocation: browserEnabled ? browser.location() : undefined, timestamp: new Date().toISOString() });
     store.trace(id, 'provider-request', { tools: definitions.map(item => item.name), context });
+    const providerStarted = performance.now();
     const decision = await model.decide(instructions, context, definitions, previous, signal);
+    store.trace(id, 'provider-usage', { ...decision.usage, durationMs: Math.round(performance.now() - providerStarted), usageReported: Boolean(decision.usage) });
     signal.throwIfAborted();
     const outputs: Exchange['outputs'] = [];
     for (const call of decision.calls) {
@@ -332,6 +343,12 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
           : error instanceof Error ? error.message.slice(0, 360) : 'The tool request failed validation.' };
       }
       store.trace(id, 'tool-output', { name: call.name, outcome });
+      if (JSON.stringify(outcome).length > 4000) {
+        const full = JSON.stringify(outcome);
+        const evidenceId = store.saveEvidence(id, 'text', Buffer.from(full));
+        outcome = { ok: outcome.ok, message: outcome.message.slice(0, 360), evidenceId,
+          excerpt: TrajectoryCompressor(full, { limit: 1800 }).text, more: 'Use read_evidence for omitted details before depending on them.' };
+      }
       outputs.push({ type: 'function_call_output', call_id: call.call_id, output: image ? [
         { type: 'input_text', text: JSON.stringify(outcome) },
         { type: 'input_image', detail: 'low', image_url: `data:image/jpeg;base64,${image.toString('base64')}` },

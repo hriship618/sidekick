@@ -39,6 +39,5 @@ export function planCommand(command: string, settings: Settings = defaults): { a
     return { description: `Open ${links.length === 1 ? 'the link' : 'the links'} in your default browser.`,
       actions: links.map(url => ({ label: 'Open link', tool: 'openUrl', input: { url: url.replace(/[,.]$/, '') } })) };
   }
-  const local = /^open ((?:[a-z]:\\)[^\r\n]+)$/i.exec(command);
-  if (local) return { description: 'Open a file or folder with Windows.', actions: [{ label: 'Open local item', tool: 'openLocal', input: { path: local[1] } }] };
+  // Local paths are admitted by the graph router, which rejects compound requests.
 }

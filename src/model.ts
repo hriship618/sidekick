@@ -1,10 +1,11 @@
 import OpenAI from 'openai';
+import { PromptManager } from './prompt-manager.ts';
 import type { FunctionTool, Response, ResponseCreateParamsBase, ResponseInput, ResponseOutputItem } from 'openai/resources/responses/responses';
 
 export type ToolDefinition = Omit<FunctionTool, 'type' | 'strict'>;
 export type ToolCall = Extract<ResponseOutputItem, { type: 'function_call' }>;
 type ReplayItem = Extract<ResponseOutputItem, { type: 'reasoning' | 'function_call' }>;
-export type ModelTurn = { items: ReplayItem[]; calls: ToolCall[] };
+export type ModelTurn = { items: ReplayItem[]; calls: ToolCall[]; usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number } };
 export type Exchange = { items: ReplayItem[]; outputs: ResponseInput };
 export type AgentModel = {
   decide(instructions: string, context: string, tools: ToolDefinition[], previous: Exchange | undefined, signal: AbortSignal): Promise<ModelTurn>;
@@ -42,6 +43,7 @@ function chatGPTError(error: unknown): string {
 }
 
 function modelAdapter(getKey: (signal: AbortSignal) => Promise<string>, model: string, plan: boolean, testEndpoint?: string): AgentModel {
+  let prompts: PromptManager | undefined;
   return {
     async decide(instructions, context, tools, previous, signal) {
       const key = await getKey(signal);
@@ -50,11 +52,14 @@ function modelAdapter(getKey: (signal: AbortSignal) => Promise<string>, model: s
         apiKey: key, baseURL: testEndpoint ?? 'https://api.openai.com/v1', maxRetries: 0, timeout: 45_000, logLevel: 'off',
         organization: null, project: null,
       });
-      const input: ResponseInput = [{ role: 'user', content: context }];
-      if (previous) input.push(...previous.items, ...previous.outputs);
-      const functions = tools.map(tool => ({ ...tool, type: 'function' as const, strict: false }));
+      prompts ??= new PromptManager(instructions, tools);
+      prompts.assertCompatible(instructions, tools);
+      const input = prompts.input(context, previous);
+      const functions = prompts.tools().map(tool => ({ ...tool, type: 'function' as const, strict: false }));
       const request: ResponseCreateParamsBase = {
-        model, instructions, input, store: false, include: ['reasoning.encrypted_content'],
+        model, instructions: prompts.instructions, input, store: false, include: ['reasoning.encrypted_content'],
+        // Standard API hint; plan access retains its existing supported request shape.
+        ...(!plan ? { prompt_cache_key: prompts.cacheKey } : {}),
         tools: plan ? [{ type: 'namespace', name: 'sidekick', description: 'Rove desktop task tools.', tools: functions }] : functions,
         tool_choice: 'required', parallel_tool_calls: false,
       };
@@ -81,7 +86,9 @@ function modelAdapter(getKey: (signal: AbortSignal) => Promise<string>, model: s
       if (!calls.length || (plan && calls.some(call => call.namespace && call.namespace !== 'sidekick'))) {
         throw new Error('The selected model did not return a usable Rove action. Try another model.');
       }
-      return { items: response.output.filter(item => item.type === 'reasoning' || item.type === 'function_call'), calls };
+      return { items: response.output.filter(item => item.type === 'reasoning' || item.type === 'function_call'), calls,
+        usage: response.usage ? { inputTokens: response.usage.input_tokens,
+          cachedInputTokens: response.usage.input_tokens_details?.cached_tokens ?? 0, outputTokens: response.usage.output_tokens } : undefined };
     },
   };
 }

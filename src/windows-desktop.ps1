@@ -10,6 +10,47 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+// Windows Core Audio COM contract: set and independently read back the default playback volume.
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] public class RoveAudioEnumerator {}
+[ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IRoveAudioEnumerator {
+ int EnumAudioEndpoints(int flow,int mask,out IntPtr devices);
+ [PreserveSig] int GetDefaultAudioEndpoint(int flow,int role,out IRoveAudioDevice device);
+}
+[ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IRoveAudioDevice {
+ [PreserveSig] int Activate(ref Guid iid,int context,IntPtr parameters,[MarshalAs(UnmanagedType.IUnknown)] out object value);
+}
+[ComImport, Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IRoveEndpointVolume {
+ int RegisterControlChangeNotify(IntPtr p); int UnregisterControlChangeNotify(IntPtr p); int GetChannelCount(out uint count);
+ int SetMasterVolumeLevel(float level,ref Guid context);
+ [PreserveSig] int SetMasterVolumeLevelScalar(float level,ref Guid context);
+ int GetMasterVolumeLevel(out float level);
+ [PreserveSig] int GetMasterVolumeLevelScalar(out float level);
+}
+public class RoveAudio {
+ public static double[] Increase(int amount) {
+  if(amount<1 || amount>20) throw new ArgumentOutOfRangeException("amount");
+  object enumerator=new RoveAudioEnumerator(); IRoveAudioDevice device=null; object endpoint=null;
+  try {
+   Marshal.ThrowExceptionForHR(((IRoveAudioEnumerator)enumerator).GetDefaultAudioEndpoint(0,1,out device));
+   Guid iid=new Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), context=Guid.Empty;
+   Marshal.ThrowExceptionForHR(device.Activate(ref iid,23,IntPtr.Zero,out endpoint));
+   var volume=(IRoveEndpointVolume)endpoint; float before,after;
+   Marshal.ThrowExceptionForHR(volume.GetMasterVolumeLevelScalar(out before));
+   float target=Math.Min(1f,before+amount/100f);
+   Marshal.ThrowExceptionForHR(volume.SetMasterVolumeLevelScalar(target,ref context));
+   Marshal.ThrowExceptionForHR(volume.GetMasterVolumeLevelScalar(out after));
+   if(Math.Abs(after-target)>0.005) throw new InvalidOperationException("Volume read-back did not match the requested setting. Inspect before retrying.");
+   return new double[]{Math.Round(before*100,2),Math.Round(after*100,2)};
+  } finally {
+   if(endpoint!=null) Marshal.ReleaseComObject(endpoint);
+   if(device!=null) Marshal.ReleaseComObject(device);
+   Marshal.ReleaseComObject(enumerator);
+  }
+ }
+}
 public class RoveWindow {
  public string windowId; public int processId; public string title;
 }
@@ -44,7 +85,11 @@ try {
     try { $version=$process.MainModule.FileVersionInfo;$product=[string]$version.ProductName;$description=[string]$version.FileDescription } catch {}
     return @{processName=[string]$process.ProcessName;productName=$product;description=$description}
   }
-  if ($request.action -eq 'listWindows') {
+  if ($request.action -eq 'increaseVolume') {
+    $levels=[RoveAudio]::Increase([int]$request.amount)
+    $data=@{beforePercent=$levels[0];afterPercent=$levels[1];settingVerified=$true;audioAudibilityVerified=$false}
+    $message='Verified the default playback volume setting. Muting and actual sound audibility were not changed or verified.'
+  } elseif ($request.action -eq 'listWindows') {
     $identities=@{}
     $windows=@(foreach($window in [RoveNative]::Windows()) {
       if(!$identities.ContainsKey($window.processId)) {
@@ -75,10 +120,17 @@ try {
     $data=@{processId=$request.processId;exited=$true}
   } elseif ($request.action -eq 'runPowerShell') {
     $global:LASTEXITCODE=0
-    $output=(& ([ScriptBlock]::Create([string]$request.script)) *>&1 | Out-String)
-    if($LASTEXITCODE -ne 0){throw ('The command exited with code '+$LASTEXITCODE+'. Inspect the target before retrying.')}
-    $data=@{output=$output;exitCode=0}
-    $message='PowerShell finished. Check the observed output to verify the requested outcome.'
+    $stdout=[Text.StringBuilder]::new();$stderr=[Text.StringBuilder]::new()
+    $commandError=$null
+    try {
+      & ([ScriptBlock]::Create([string]$request.script)) *>&1 | ForEach-Object {
+        if($_ -is [Management.Automation.ErrorRecord]) { [void]$stderr.AppendLine([string]$_) }
+        else { [void]$stdout.AppendLine(($_ | Out-String).TrimEnd()) }
+      }
+    } catch { $commandError=$_;[void]$stderr.AppendLine([string]$_) }
+    $exitCode=if($commandError){1}else{$LASTEXITCODE}
+    $data=@{output=$stdout.ToString();stderr=$stderr.ToString();exitCode=$exitCode}
+    $message=if($exitCode -ne 0){'The command exited with code '+$exitCode+'. Inspect the target before retrying.'}else{'PowerShell finished. Check the observed output to verify the requested outcome.'}
   } else {
     $handle=[IntPtr][long]$request.windowId
     $exists=[RoveNative]::IsWindow($handle)

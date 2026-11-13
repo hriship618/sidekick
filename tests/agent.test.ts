@@ -83,10 +83,15 @@ test('runner resumes a question, verifies a real browser batch, and stops a late
     response.end('<h1>Lab form</h1><label>Name <input></label><button onclick="document.querySelector(\'output\').textContent=\'Saved\'">Preview</button><output></output>');
   });
   let turn = 0;
+  let staticPrefix: string | undefined;
   const endpoint = await fixture(async (request, response) => {
     const req = await body(request);
     const index = turn++;
-    const last = req.input.at(-1);
+    const prefix = JSON.stringify({ instructions: req.instructions, tools: req.tools, cacheKey: req.prompt_cache_key });
+    staticPrefix ??= prefix;
+    assert.equal(prefix, staticPrefix, 'prefix and tool catalog remain byte-stable across turns');
+    assert.equal(req.input.at(-1).role, 'user', 'volatile context is last');
+    const last = req.input.filter((item: { type?: string }) => item.type === 'function_call_output').at(-1);
     const visible = (name: string) => ({ by: 'text', name });
     const outputs = [
       () => call(response, 'ask_user', { question: 'What name should I enter?', manualLogin: false }, index),

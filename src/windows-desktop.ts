@@ -4,6 +4,7 @@ import { z } from 'zod';
 const windowTarget = { windowId: z.string().regex(/^[1-9][0-9]{0,19}$/), processId: z.number().int().positive() };
 const control = { ...windowTarget, controlId: z.string().regex(/^[0-9]+(?:\.[0-9]+)*$/) };
 export const desktopInput = z.strictObject({ operation: z.discriminatedUnion('action', [
+  z.strictObject({ action: z.literal('increaseVolume'), amount: z.number().int().min(1).max(20) }),
   z.strictObject({ action: z.literal('listWindows'), query: z.string().trim().min(1).max(100).optional() }),
   z.strictObject({ action: z.literal('listProcesses'), name: z.string().max(100).optional() }),
   z.strictObject({ action: z.literal('inspectWindow'), ...windowTarget }),
@@ -16,6 +17,10 @@ export const desktopInput = z.strictObject({ operation: z.discriminatedUnion('ac
 ]) });
 export type DesktopInput = z.infer<typeof desktopInput>;
 export type DesktopResult = { verification: 'desktop-observed'; message: string; data: Record<string, unknown> };
+export class DesktopExecutionError extends Error {
+  readonly result: DesktopResult;
+  constructor(result: DesktopResult) { super(result.message); this.result = result; }
+}
 export const desktopOutput = z.strictObject({ verification: z.literal('desktop-observed'), message: z.string(), data: z.record(z.string(), z.unknown()) });
 
 export function executeDesktop(helper: string, value: unknown, signal?: AbortSignal): Promise<DesktopResult> {
@@ -50,7 +55,9 @@ export function executeDesktop(helper: string, value: unknown, signal?: AbortSig
       try {
         const result = JSON.parse(stdout.replace(/^\uFEFF/, '').trim());
         if (code !== 0 || result.error) throw new Error(result.error || 'The desktop action failed.');
-        finish(undefined, desktopOutput.parse(result));
+        const parsed = desktopOutput.parse(result);
+        if (typeof parsed.data.exitCode === 'number' && parsed.data.exitCode !== 0) finish(new DesktopExecutionError(parsed));
+        else finish(undefined, parsed);
       } catch (error) {
         finish(error instanceof SyntaxError ? new Error('The desktop helper returned an invalid result. ' + (stderr.includes('Access') ? 'Windows denied access to the target.' : 'Inspect the target before retrying.')) : error as Error);
       }

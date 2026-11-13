@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { webUrl, localPath, sshAlias, remoteDir, type ToolResult } from './contracts.ts';
-import { desktopInput, desktopOutput, type DesktopInput, type DesktopResult } from './windows-desktop.ts';
+import { desktopInput, desktopOutput, DesktopExecutionError, type DesktopInput, type DesktopResult } from './windows-desktop.ts';
 export { localPath } from './contracts.ts';
 
 export interface PlatformTools {
@@ -39,7 +39,9 @@ export function createRegistry(platform: PlatformTools) {
       input: desktopInput, output: desktopOutput, verification: 'desktop-observed' as const, retryMayDuplicate: true,
       async run(value: unknown, signal?: AbortSignal): Promise<DesktopResult> {
         if (!platform.desktop) throw new Error('The Windows desktop adapter is unavailable in this environment.');
-        return desktopOutput.parse(await platform.desktop(desktopInput.parse(value), signal));
+        const result = desktopOutput.parse(await platform.desktop(desktopInput.parse(value), signal));
+        if (typeof result.data.exitCode === 'number' && result.data.exitCode !== 0) throw new DesktopExecutionError(result);
+        return result;
       },
     },
     openUrl: tool(z.strictObject({ url: webUrl }), 'dispatch-only', async ({ url }) => {

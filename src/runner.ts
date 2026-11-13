@@ -1,5 +1,6 @@
 import { commandSchema, type ActiveRun, type Question } from './contracts.ts';
-import { planCommand, closeIntent } from './workflow.ts';
+import { planCommand } from './workflow.ts';
+import { matchLocalIntent } from './local-router.ts';
 import type { Store } from './store.ts';
 import { localPath, type createRegistry } from './tools.ts';
 import { z } from 'zod';
@@ -171,9 +172,13 @@ export class Runner {
   async run(value: unknown) {
     const command = commandSchema.parse(value);
     if (this.execution) throw new Error('A task is already running.');
-    const close = closeIntent(command);
-    if (close && this.agent?.fastDesktop && this.store.settings().desktopAccess) return this.runClose(command, close);
-    const plan = planCommand(command, this.store.settings());
+    const route = matchLocalIntent(command);
+    if (route?.node === 'Close-App' && this.agent?.fastDesktop && this.store.settings().desktopAccess) return this.runClose(command, route.parameters.app);
+    const plan = route?.node === 'Open-Dir'
+      ? { description: 'Open the requested local resource.', actions: [{ tool: 'openLocal' as const, label: 'Open local item', input: { path: route.parameters.path } }] }
+      : route?.node === 'Volume-Up' && this.agent?.fastDesktop && this.store.settings().desktopAccess
+        ? { description: 'Increase playback volume and verify the setting.', actions: [{ tool: 'desktop' as const, label: 'Increase volume', input: { operation: { action: 'increaseVolume' as const, amount: route.parameters.amount } } }] }
+        : planCommand(command, this.store.settings());
     if (!plan) {
       if (this.agent) return this.runNatural(command, this.agent);
       this.store.start(command, 'failed', 'Describe a task or use an explicit open command.');
@@ -181,6 +186,7 @@ export class Runner {
       return;
     }
     const id = this.store.start(command, 'running', 'Sending actions to Windows…', plan.actions, plan.description, plan.routine);
+    if (route) this.store.trace(id, 'local-route', { ...route, modelCalls: 0 });
     const execution: Execution = { id, cancelling: false, controller: new AbortController() };
     this.execution = execution;
     const policy = new ExecutionPolicy(command, question => this.ask(execution, question));
@@ -194,7 +200,7 @@ export class Runner {
         try {
           if (action.tool === 'openLocal') await policy.authorizeLocal(localPath.parse(action.input.path), Boolean(plan.routine));
           execution.controller.signal.throwIfAborted();
-          const result = await this.registry[action.tool].run(action.input);
+          const result = await this.registry[action.tool].run(action.input, execution.controller.signal);
           this.store.updateStep(id, index, 'completed', result);
         } catch (error) {
           if (execution.cancelling) { this.store.updateStep(id, index, 'skipped'); break; }
@@ -207,7 +213,7 @@ export class Runner {
       } else {
         this.store.finish(id, failures ? 'failed' : 'completed', failures
           ? `${failures} of ${plan.actions.length} actions couldn’t finish.`
-          : 'All launch requests sent.');
+          : route?.node === 'Volume-Up' ? 'Playback volume increased and its setting verified.' : 'All launch requests sent.');
       }
     } finally {
       this.execution = undefined;

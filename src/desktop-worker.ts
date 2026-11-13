@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { desktopInput, desktopOutput, type DesktopResult } from './windows-desktop.ts';
+import { desktopInput, desktopOutput, DesktopExecutionError, type DesktopResult } from './windows-desktop.ts';
 
 /** One owned helper, one validated request at a time; no PowerShell startup/compilation per step. */
 export class DesktopWorker {
@@ -50,7 +50,11 @@ export class DesktopWorker {
           const pending = this.pending;
           if (!pending || response.id !== pending.id) throw new Error('The desktop helper returned an unexpected response.');
           if (response.result?.error) pending.finish(new Error(response.result.error));
-          else pending.finish(undefined, desktopOutput.parse(response.result));
+          else {
+            const result = desktopOutput.parse(response.result);
+            if (typeof result.data.exitCode === 'number' && result.data.exitCode !== 0) pending.finish(new DesktopExecutionError(result));
+            else pending.finish(undefined, result);
+          }
         } catch (error) { this.stop(error instanceof Error ? error : new Error('Invalid desktop response.')); }
       }
     });
