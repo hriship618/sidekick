@@ -265,14 +265,27 @@ function App() {
     const healthTimer = setInterval(beat, 1500);
     let updated = false;
     const unsubscribe = api.onUpdate(next => { updated = true; setSnapshot(next); });
-    const unsubscribeSummon = api.onSummon(() => requestAnimationFrame(() => input.current?.focus()));
+    let focusTimer: ReturnType<typeof setTimeout> | undefined;
+    const focusComposer = () => {
+      const focus = () => {
+        if (!document.hasFocus()) return;
+        const field = document.querySelector<HTMLInputElement>('.command-field input,.chat-compose input');
+        field?.focus({ preventScroll: true });
+      };
+      requestAnimationFrame(focus);
+      clearTimeout(focusTimer);
+      // Windows may deliver activation after the global chord's Alt key is released.
+      focusTimer = setTimeout(focus, 90);
+    };
+    const unsubscribeSummon = api.onSummon(focusComposer);
+    window.addEventListener('focus', focusComposer);
     void api.snapshot().then(next => { if (alive && !updated) setSnapshot(next); })
       .catch(error => { if (alive) setError(errorText(error)); });
     const escape = (event: globalThis.KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing) void api.hide();
     };
     window.addEventListener('keydown', escape);
-    return () => { alive = false; clearInterval(healthTimer); unsubscribe(); unsubscribeSummon(); window.removeEventListener('keydown', escape); };
+    return () => { alive = false; clearInterval(healthTimer); clearTimeout(focusTimer); unsubscribe(); unsubscribeSummon(); window.removeEventListener('focus', focusComposer); window.removeEventListener('keydown', escape); };
   }, []);
 
   async function run(value: string) {
@@ -291,6 +304,10 @@ function App() {
   const viewTask = () => navigate('task');
   const openSettings = () => { setTab('Settings'); navigate('workspace'); };
   if (location.hash === '#companion') return snapshot ? <CompanionOverlay snapshot={snapshot}/> : null;
+  if (!snapshot) return <main className="startup-screen" role="status">
+    <strong>Rove</strong><p>{error || 'Opening your chat…'}</p>
+    {error && <button className="primary" onClick={() => location.reload()}>Try again</button>}
+  </main>;
   return <div className={`app ${surface} ${snapshot?.settings.showCompanion === false ? 'no-companion' : ''}`}>
     {surface !== 'command' && <Titlebar surface={surface} navigate={navigate} settings={openSettings} hide={hide}/>}
     {error && surface !== 'command' && <p className="notice app-error" role="alert">{error}</p>}

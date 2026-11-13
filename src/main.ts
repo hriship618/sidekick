@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, screen, shell, Tray, safeStorage } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, shell, Tray, safeStorage } from 'electron';
 import { spawn } from 'node:child_process';
 import { access, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -17,7 +17,11 @@ import { lifecycleLog, recoverRenderer, rendererHeartbeat } from './recovery.ts'
 import { DesktopWorker } from './desktop-worker.ts';
 import { primaryButtonReader } from './windows-pointer.ts';
 import { AttentionController, attentionKey } from './attention.ts';
+import { launcherHealthy, launcherProbe } from './launcher-health.ts';
 
+// Frameless transparent Windows windows can retain an empty GPU surface after desktop/driver transitions.
+// This UI is text and small SVGs; software rendering avoids depending on that surface's recovery.
+if (process.platform === 'win32') app.disableHardwareAcceleration();
 app.setName('Rove');
 // Keep the Chromium key store, SQLite database and browser sessions at their original path.
 // Explicit profiles (tests and development sandboxes) remain fully isolated.
@@ -39,6 +43,9 @@ let cancelSignIn = () => {};
 let publish = () => {};
 let restoreMain = () => {};
 let attentionNotification: Notification | undefined;
+let launcherNeedsRefresh = false;
+let checkingLauncher: BrowserWindow | undefined;
+let lifecycleDirectory = '';
 const appStartedAt = Date.now();
 const dimensions = { command: [540, 128], task: [600, 560], workspace: [920, 680] } as const;
 let shortcutWarning = '';
@@ -78,18 +85,34 @@ function show(next: Surface, atCursor = false) {
   if (!window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
   clearTimeout(collapseTimer);
-    if (next !== surface || !window.isVisible()) layout(next, atCursor);
+    if (atCursor || next !== surface || !window.isVisible()) layout(next, atCursor);
   companion?.launcher(next === 'command');
   publish();
   window.show();
   window.focus();
   window.webContents.focus();
+  window.webContents.invalidate();
   window.webContents.send('sidekick:summon');
 }
 
 function summon() {
   if (!window || window.isDestroyed()) { restoreMain(); return; }
+  lifecycleLog(lifecycleDirectory, 'launcher-summon', { minimized: window.isMinimized(), visible: window.isVisible(), refresh: launcherNeedsRefresh });
+  if (launcherNeedsRefresh) { launcherNeedsRefresh = false; window.destroy(); return; }
   show(runner?.active() ? 'task' : 'command', true);
+  const summoned = window;
+  if (checkingLauncher === summoned) return;
+  checkingLauncher = summoned;
+  void launcherHealthy(() => summoned.webContents.executeJavaScript(launcherProbe)).then(async healthy => {
+    if (!healthy && !summoned.isDestroyed()) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      healthy = await launcherHealthy(() => summoned.webContents.executeJavaScript(launcherProbe));
+    }
+    if (!healthy && !summoned.isDestroyed() && window === summoned) {
+      lifecycleLog(lifecycleDirectory, 'launcher-blank-replaced');
+      summoned.destroy();
+    }
+  }).finally(() => { if (checkingLauncher === summoned) checkingLauncher = undefined; });
 }
 
 
@@ -123,6 +146,10 @@ async function launchTerminal(args: string[]) {
 
 async function start() {
   const logs = join(app.getPath('userData'), 'logs');
+  lifecycleDirectory = logs;
+  const refreshAfterResume = () => { launcherNeedsRefresh = true; lifecycleLog(logs, 'launcher-refresh-pending'); };
+  powerMonitor.on('resume', refreshAfterResume);
+  powerMonitor.on('unlock-screen', refreshAfterResume);
   lifecycleLog(logs, 'start', { version: app.getVersion(), packaged: app.isPackaged });
   const helper = (name: string) => app.isPackaged ? join(process.resourcesPath, name) : join(__dirname, name);
   const worker = new DesktopWorker(helper('windows-desktop.ps1'));
@@ -350,7 +377,7 @@ async function start() {
     icon: join(__dirname, 'rove.ico'),
     width: dimensions.command[0], height: dimensions.command[1], show: false, title: 'Rove',
     backgroundColor: '#00000000', transparent: true, frame: false, resizable: false, maximizable: false, autoHideMenuBar: true,
-    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false },
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false, backgroundThrottling: false },
   });
   const created = window;
     if (process.platform === 'win32') created.setAppDetails({

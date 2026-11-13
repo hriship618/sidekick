@@ -184,6 +184,12 @@ export class DesktopCompanion {
   }
 
   panel(width: number, height: number, atCursor: boolean) {
+    if (atCursor) {
+      const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+      const area = this.usableArea(display);
+      const w = Math.min(width, area.width - 16), h = Math.min(height, area.height - 16);
+      return { x: area.x + Math.round((area.width - w) / 2), y: area.y + Math.round((area.height - h) * .28), width: w, height: h };
+    }
     return panelNearCompanion(this.state, this.area, Math.min(width, this.area.width - 16), Math.min(height, this.area.height - 16));
   }
   visibility() {

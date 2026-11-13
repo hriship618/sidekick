@@ -113,6 +113,21 @@ try{
  greetingTimes.sort((a,b)=>a-b);
  await panel.getByRole('log',{name:'Conversation'}).getByText('Hey! What’s on your mind?',{exact:true}).first().waitFor();
  if(process.env.ROVE_TEXTING_SCREENSHOT)await panel.screenshot({path:process.env.ROVE_TEXTING_SCREENSHOT});
+ // Summoning a visible-but-offscreen launcher must re-anchor it on a current display.
+ await app.evaluate(({BrowserWindow,app})=>{const w=BrowserWindow.getAllWindows().find(w=>w.getTitle()==='Rove');w.setBounds({x:-32000,y:-32000});app.emit('second-instance',{},[],process.cwd());});
+ assert.equal(await app.evaluate(({BrowserWindow,screen})=>{const b=BrowserWindow.getAllWindows().find(w=>w.getTitle()==='Rove').getBounds();return screen.getAllDisplays().some(d=>b.x>=d.workArea.x&&b.y>=d.workArea.y&&b.x+b.width<=d.workArea.x+d.workArea.width&&b.y+b.height<=d.workArea.y+d.workArea.height);}),true);
+ const blankBefore=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(w=>w.getTitle()==='Rove').id);
+ await panel.evaluate(()=>document.getElementById('root').replaceChildren());
+ await app.evaluate(({app})=>app.emit('second-instance',{},[],process.cwd()));
+ for(let i=0;i<100;i++){if(await app.evaluate(({BrowserWindow},id)=>BrowserWindow.getAllWindows().some(w=>w.getTitle()==='Rove'&&w.id!==id),blankBefore))break;await new Promise(r=>setTimeout(r,50));}
+ panel=await pageReady(false,'input[aria-label=Command]');
+ assert.notEqual(await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(w=>w.getTitle()==='Rove').id),blankBefore,'blank renderer replaced on summon');
+ const resumeBefore=await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(w=>w.getTitle()==='Rove').id);
+ await app.evaluate(({app,powerMonitor})=>{powerMonitor.emit('resume');app.emit('second-instance',{},[],process.cwd());});
+ for(let i=0;i<100;i++){if(await app.evaluate(({BrowserWindow},id)=>BrowserWindow.getAllWindows().some(w=>w.getTitle()==='Rove'&&w.id!==id),resumeBefore))break;await new Promise(r=>setTimeout(r,50));}
+ panel=await pageReady(false,'input[aria-label=Command]');
+ assert.notEqual(await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(w=>w.getTitle()==='Rove').id),resumeBefore,'stale native launcher replaced after resume');
+ console.log('offscreen, blank-renderer and resume activation recovery verified');
  const result={packaged:Boolean(executablePath),closeDurationMs:elapsedMs,greetingMedianMs:greetingTimes[9],greetingP95Ms:greetingTimes[18],greetingSamples:20,modelCalls:0,steps:2,rendererRecovery:true,companionRecovery:true};
  console.log(JSON.stringify(result));
  if(process.env.ROVE_RESULT)await writeFile(process.env.ROVE_RESULT,JSON.stringify(result,null,2));
