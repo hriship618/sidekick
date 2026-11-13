@@ -9,6 +9,7 @@ import { routineActions } from './workflow.ts';
 import { desktopInput, DesktopExecutionError } from './windows-desktop.ts';
 import { compressShellData, TrajectoryCompressor } from './trajectory.ts';
 import { executeGraph, graphOrder, linearGraph, type ExecutionNode } from './execution-graph.ts';
+import { requiresAction } from './conversation-mode.ts';
 
 type Registry = ReturnType<typeof createRegistry>;
 export type AgentServices = { configured(): boolean; model(settings: Settings): Promise<AgentModel>; browser: BrowserSession; fastDesktop?: boolean };
@@ -37,6 +38,7 @@ const graphDefinition = z.strictObject({ nodes: z.array(z.strictObject({
   action: z.object({ action: z.enum([...Object.keys(browserActions), 'openUrl', 'openLocal', 'sshWorkspace', 'desktop']) }).catchall(z.unknown()),
 })).min(1).max(12) });
 const controls = {
+  reply: z.strictObject({ message: z.string().trim().min(1).max(3000) }),
   finish: z.strictObject({ status: z.enum(['completed', 'failed']), message: text }),
   status_update: z.strictObject({ message: z.string().min(1).max(140) }),
   ask_user: z.strictObject({ question: text, manualLogin: z.boolean() }),
@@ -47,6 +49,7 @@ const controls = {
   read_evidence: z.strictObject({ id: z.number().int().positive(), offset: z.number().int().nonnegative().max(50_000).optional() }),
 };
 const descriptions: Record<string, string> = {
+  reply: 'Send a natural conversational or informational answer. No computer action is implied. Never claim an unperformed action; execute requested work with tools first.',
   finish: 'Finish with the outcome grounded in tool evidence. If a capability is missing, identify it specifically and give an actionable alternative.',
   status_update: 'Report meaningful progress while continuing execution. This never asks the user a question.',
   ask_user: 'Ask one concise question for essential missing information or material ambiguity. Use manualLogin for a manual browser step. Never ask for credentials in chat.',
@@ -73,9 +76,11 @@ const labels: Record<string, string> = {
   navigate: 'Opening page', inspect: 'Reading page', click: 'Using page control', fill: 'Filling form', screenshot: 'Checking viewport',
 };
 const instructions = `You operate Rove, a Windows desktop task assistant. The user's request authorizes ordinary steps needed to perform that task.
+For ordinary conversation or informational questions, answer naturally with reply. Do not turn small talk into an execution plan or demand an OS action merely to answer. Requested computer actions still require real tool execution and accurate verification.
 Connected tools can open requested URLs in the default browser, open local files/folders, launch SSH workspaces, and operate a dedicated persistent Edge browser with navigation, inspection, clicks, and form filling. This browser is separate from regular Chrome tabs. If its current location is empty, navigate to the requested site or look up saved resources before inspecting.
 Execute supported requests. A familiar public site such as YouTube can use its canonical URL. Find saved resources with get_context before asking for configuration. Use relevant current browser state and saved routines.
 The desktop tool provides native Windows window/process controls, accessibility inspection and actions, and PowerShell execution for general local work. Desktop access is enabled unless settings explicitly disable it. Use these tools for desktop requests, including closing applications. List and inspect actual targets, execute the requested action, and verify the result. No routine approval is needed for authorized desktop steps. Graceful close preserves an application's save dialogs; never force-kill to bypass unsaved work unless the user requests it. PowerShell inherits the current account's Windows access and cannot bypass UAC or administrator restrictions. Do not claim a missing desktop capability without checking the available tools and their results.
+For opening installed applications use listApps, which searches Start apps and Desktop/Start-menu shortcuts, including executable product names and package/target metadata. Match the requested product to observed identities even when a shortcut has a different display name. Ask only for material ambiguity. Launch with the observed applicationId using launchApp; never guess an executable path or invent a product alias. A launch request does not verify app readiness. Recent conversation is context, not evidence of current window IDs or fresh permission for unrelated actions.
 For an app name, prefer a matching executable productName/description over a coincidental document title. Window titles and process names can differ from product names. Use a filtered listWindows query first. Do not confuse background helper processes with the visible application. Use retained desktop observations across status updates. Once closeWindow reports windowClosed=true, the requested window closure is verified: finish without repeatedly listing windows/processes. A process can remain for a tray app; do not force-kill it merely because the window closed. If discovery is unchanged, choose an observed target, ask one concise clarification, or report the specific blocker. Never alternate the same successful read-only calls indefinitely.
 Use status_update for progress and continue immediately. Ask only for missing essential information, material ambiguity, manual login, or a boundary identified by execution policy.
 Carry answers forward. Preserve instructions such as "stop at the review page". When that page is reached, finish and report what is ready. Never bypass a boundary rejection by changing tools, locators, or batches.
@@ -91,6 +96,7 @@ type Params = {
   id: string; command: string; settings: Settings; model: AgentModel; store: Store; registry: Registry;
   browser: BrowserSession; signal: AbortSignal; publish(): void; phase(value: string): void;
   ask(question: Question): Promise<string | boolean | undefined>;
+  conversation?: { role: 'user' | 'assistant'; text: string }[];
 };
 
 function tool(name: string, schema: z.ZodType): ToolDefinition {
@@ -175,7 +181,7 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
     const checked = entrySchema?.parse(args) ?? args;
     const fingerprint = name + JSON.stringify(checked) + (Object.hasOwn(browserActions, name) ? browser.location() + ':' + pageRevision : '');
     const operation = name === 'desktop' ? (checked as unknown as { operation: Args }).operation : undefined;
-    const readOnly = operation && ['listWindows', 'listProcesses', 'inspectWindow'].includes(String(operation.action));
+    const readOnly = operation && ['listWindows', 'listProcesses', 'inspectWindow', 'listApps'].includes(String(operation.action));
     const priorRead = readOnly ? discovery.get(fingerprint) : undefined;
     if (priorRead && priorRead.count >= 2) {
       stalledReads++;
@@ -274,7 +280,7 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
   for (let turn = 0; turn < 24; turn++) {
     signal.throwIfAborted();
     phase('Planning the next step');
-    const context = JSON.stringify({ goal: command, constraints: policy.constraints(), userAnswers: answers, actionLedger: ledger.slice(-6),
+    const context = JSON.stringify({ goal: command, conversation: p.conversation, constraints: policy.constraints(), userAnswers: answers, actionLedger: ledger.slice(-6),
       completedActionCount: successes, earlierActionsOmitted: Math.max(0, ledger.length - 6),
       desktopObservations: [...desktopObservations.values()],
       browserLocation: browserEnabled ? browser.location() : undefined, timestamp: new Date().toISOString() });
@@ -292,6 +298,11 @@ export async function runAgent(p: Params): Promise<{ status: 'completed' | 'fail
         const args = z.record(z.string(), z.unknown()).parse(JSON.parse(call.arguments));
         store.trace(id, 'model-tool', { name: call.name, ...(['batch', 'execute_graph'].includes(call.name) ? {} : { args: traceArgs(args) }) });
         switch (call.name) {
+          case 'reply': {
+            const result = controls.reply.parse(args);
+            if (!successes && requiresAction(command)) { outcome = { ok: false, message: 'This request requires an action or current observation. Execute it, ask for missing information, or finish with a specific blocker. A chat reply cannot stand in for execution.' }; break; }
+            return { status: 'completed', message: result.message };
+          }
           case 'finish': {
             const result = controls.finish.parse(args);
             if (result.status === 'completed' && !successes) {

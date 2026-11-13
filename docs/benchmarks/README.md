@@ -1,5 +1,11 @@
 # Rove local benchmark report
 
+## Chat responsiveness update
+
+The texting-style chat check measured 20 greeting replies through Electron IPC: **10.54 ms median**, **41.55 ms p95**, with zero provider calls and zero OS actions. These are predefined local greetings, not cloud-model TTFT or end-to-end display-paint measurements. The same check verifies that a question arriving after chat dismissal leaves the native window hidden, that replying and follow-ups preserve the thread, and that renderer recovery still works. See [chat-latency.json](chat-latency.json). The expanded test suite passes 50 tests. Windows notification delivery itself depends on the user's OS settings and is suppressed during automated checks.
+
+## Earlier execution baseline
+
 Measured on Windows 10.0.26300, AMD Ryzen AI 7 350 (16 logical processors), Node v24.22.1. Development build on top of commit `fde570e`, with the executable-graph and metrics integration pending commit. This is a local sequential run under the current desktop load, not a controlled hardware lab or installed-app measurement.
 
 Reproduce from the app directory with `pnpm benchmark`. The harness builds the app, creates a disposable profile and SQLite database, opens/closes only its own fixture windows, and removes its temporary directory. It does not use user credentials, change volume, close other apps, or spend provider credits. Raw samples and the labeled query set are in [latest.json](latest.json). Rerunning replaces that JSON; the numbers below describe the recorded run for this report.

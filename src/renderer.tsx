@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { ActiveRun, Run, Settings, RoveApi, Snapshot, Surface } from './contracts.ts';
 import { Companion, type Mood } from './companion.tsx';
@@ -36,8 +36,8 @@ function Titlebar({ surface, navigate, settings, hide }: { surface: Surface; nav
   return <header className="titlebar">
     <div className="brand"><span className="brand-mark"><Icon name="bolt"/></span>Rove</div>
     <div className="title-actions">
-      {surface !== 'workspace' && <button className="quiet workspace-button" onClick={() => navigate('workspace')}><Icon name="grid"/> Workspace</button>}
-      {surface !== 'workspace' && <button className="quiet workspace-button" onClick={settings}><Icon name="settings"/> Settings</button>}
+      {surface !== 'workspace' && <button className="quiet icon-button" aria-label="Workspace" title="Workspace" onClick={() => navigate('workspace')}><Icon name="grid"/></button>}
+      {surface !== 'workspace' && <button className="quiet icon-button" aria-label="Settings" title="Settings" onClick={settings}><Icon name="settings"/></button>}
       <button className="quiet icon-button" onClick={hide} title="Hide Rove (Esc)" aria-label="Hide Rove"><Icon name="close"/></button>
     </div>
   </header>;
@@ -109,9 +109,13 @@ function TaskCard({ run, active, settings, edit, next, setup, perform }: {
   const title = useRef<HTMLHeadingElement>(null);
   const question = useRef<HTMLHeadingElement>(null);
   const replyInput = useRef<HTMLInputElement>(null);
+  const conversationEnd = useRef<HTMLDivElement>(null);
+  const followMessages = useRef(true);
   const [reply, setReply] = useState('');
+  const [sending, setSending] = useState(false);
   const prompt = active?.question;
   const asking = Boolean(active?.question);
+  const unknownTotal = Boolean(active?.agent || active?.indeterminate);
   const step = run.steps.find(item => item.status === 'running');
   const failures = run.steps.filter(item => item.status === 'failed');
   const processed = run.steps.filter(item => item.status === 'completed' || item.status === 'failed').length;
@@ -124,53 +128,67 @@ function TaskCard({ run, active, settings, edit, next, setup, perform }: {
     details.current.open = true;
     details.current.querySelector('summary')?.focus();
   }
-  useEffect(() => { title.current?.focus(); }, [run.id]);
+  useEffect(() => { setSending(false); }, [run.id, active?.questionId]);
+  useEffect(() => { if (!active) replyInput.current?.focus(); }, [run.id, Boolean(active)]);
   useEffect(() => {
     if (!prompt) return;
     if (prompt.kind === 'text') replyInput.current?.focus();
     else question.current?.focus();
-  }, [prompt?.kind]);
-  function sendReply(event: FormEvent) {
+  }, [prompt?.kind, prompt && ('text' in prompt ? prompt.text : prompt.path)]);
+  useLayoutEffect(() => { if (followMessages.current) conversationEnd.current?.scrollIntoView({ block: 'end' }); }, [run.messages?.at(-1)?.id]);
+  async function sendReply(event: FormEvent) {
     event.preventDefault();
-    if (!reply.trim()) return;
-    perform(() => api.answer(run.id, reply.trim()));
-    setReply('');
+    if (!reply.trim() || sending || (active && prompt?.kind !== 'text')) return;
+    const text = reply.trim(); setSending(true); setReply(''); followMessages.current = true;
+    try {
+      await (prompt?.kind === 'text' ? api.answer(run.id, text) : api.followUp(run.id, text));
+    } catch (error) { setReply(draft => draft || text); perform(() => Promise.reject(error)); }
+    finally { setSending(false); }
   }
 
   return <main className="task-surface arrive">
-    <div className="task-scroll">
+    {(active || run.routine) && <div className="task-overview">
       <div className="task-heading">
         <div>
-          <span className={`badge ${asking ? 'waiting' : run.status}`} role="status">{status}</span>
-          <h1 ref={title} tabIndex={-1}>{taskTitle(run)}</h1>
-          {run.description && <p>{run.description}</p>}
+          <span className="chat-state" role="status">{asking ? 'Waiting for your reply' : active?.cancelling ? 'Stopping…' : 'Working'}</span>
           {run.routine && <span className="routine-note"><Icon name="bolt"/> Using your routine</span>}
         </div>
         {settings.showCompanion && <Companion mood={mood} animated={settings.animateCompanion}/>}
       </div>
-      {(run.steps.length > 0 || active) && <div className="progress-section">
-        <div className="progress-label"><span>{asking ? 'Waiting for confirmation' : step && active ? step.label : active?.phase ?? 'Step progress'}</span>
-          {run.steps.length > 0 && <span>{processed}{active?.agent ? "" : " of " + run.steps.length} processed</span>}</div>
-        {run.steps.length && !active?.agent ? <progress aria-label="Steps processed" value={processed} max={run.steps.length}/>
+      {run.steps.length > 0 && active && <div className="progress-section">
+        <div className="progress-label"><span>{asking ? 'Waiting for your reply' : step && active ? step.label : active?.phase ?? 'Step progress'}</span>
+          {run.steps.length > 0 && <span>{processed}{unknownTotal ? "" : " of " + run.steps.length} processed</span>}</div>
+        {run.steps.length && !unknownTotal ? <progress aria-label="Steps processed" value={processed} max={run.steps.length}/>
           : <progress aria-label="Task progress"/>}
       </div>}
-      {prompt ? <section className="question">
-        <h2 ref={question} tabIndex={-1}>{prompt.kind === 'local' ? 'Open this file or folder?' : prompt.text}</h2>
+    </div>}
+    <div className="task-scroll" onScroll={event => { const area = event.currentTarget; followMessages.current = area.scrollHeight - area.scrollTop - area.clientHeight < 90; }}>
+      <section className="conversation" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions text">
+        {(run.messages?.length ? run.messages : [{ id: -1, role: 'user' as const, text: run.command, at: run.createdAt }]).map(message =>
+          <article className={`chat-message ${message.role}`} aria-label={message.role === 'user' ? 'You' : 'Rove'} key={message.id}>
+            <span className="chat-speaker">{message.role === 'user' ? 'You' : 'Rove'}</span>
+            <p>{message.text}</p>
+          </article>)}
+        {active && !prompt && <p className="chat-working" role="status">{active.cancelling ? 'Stopping…' : active.phase ?? 'Working…'}</p>}
+        <div ref={conversationEnd}/>
+      </section>
+      {prompt && prompt.kind !== 'text' ? <section className="question chat-question">
+        <h2 ref={question} tabIndex={-1}>{prompt.kind === 'login' ? 'Sign in to continue' : 'Your confirmation'}</h2>
         {prompt.kind === 'local' && <><p className="path">{prompt.path}</p><p>Windows will use its default app for this item.</p></>}
         {prompt.kind === 'approval' && <p className="path approval-detail">{prompt.detail}</p>}
-        {prompt.kind === 'login' && <p>Complete this step in the Rove browser, then summon Rove again to continue.</p>}
-        {prompt.kind === 'text' && <form className="reply" id="agent-reply" onSubmit={sendReply}>
-          <input ref={replyInput} aria-label="Your answer" maxLength={600} placeholder="Type your answer…" value={reply} onChange={event => setReply(event.target.value)}/>
-        </form>}
-      </section> : <p className={`task-message ${run.status}`}>
-        {active?.cancelling ? 'Finishing the current action before stopping.' : active ? active.phase ?? run.message : run.message}
-      </p>}
+        {prompt.kind === 'login' && <p>Sign in in the Rove browser, then select Resume below.</p>}
+      </section> : !active && !run.messages?.some(message => message.role === 'assistant') && <p className={`task-message ${run.status}`}>{run.message}</p>}
       <Details key={run.id} run={run} element={details}/>
     </div>
-    <footer className="task-footer">
+    <footer className="task-footer chat-footer">
+      <form className="chat-compose" id="agent-reply" onSubmit={sendReply}>
+        <input ref={replyInput} aria-label={prompt ? 'Your answer' : 'Message Rove'} maxLength={600}
+          placeholder={prompt ? 'Reply to Rove…' : 'Message Rove…'} value={reply} onChange={event => setReply(event.target.value)}/>
+        <button className="primary chat-send" aria-label="Send" title="Send" type="submit" disabled={!reply.trim() || sending || Boolean(active && prompt?.kind !== 'text')}><span aria-hidden="true">↑</span></button>
+      </form>
+      <div className="chat-actions">
       {prompt ? <>
         <button className="secondary" onClick={() => perform(() => api.cancel(run.id))}>Cancel task</button>
-        {prompt.kind === 'text' && <button className="primary" type="submit" form="agent-reply" disabled={!reply.trim()}>Send answer</button>}
         {prompt.kind === 'local' && <button className="primary" onClick={() => perform(() => api.answer(run.id, true))}>Open item</button>}
         {prompt.kind === 'approval' && <>
           <button className="secondary" onClick={() => perform(() => api.answer(run.id, false))}>Decline</button>
@@ -185,7 +203,8 @@ function TaskCard({ run, active, settings, edit, next, setup, perform }: {
         : run.status === 'failed' || run.status === 'interrupted' ? <>
           {failures.length > 0 && <button className="secondary" onClick={reviewSteps}>Review steps</button>}
           <button className="primary" onClick={edit}>Edit command</button>
-        </> : <button className="secondary" onClick={next}>New command</button>}
+        </> : <button className="quiet" onClick={next}>New chat</button>}
+      </div>
     </footer>
   </main>;
 }
@@ -278,7 +297,7 @@ function App() {
     {snapshot && (surface === 'workspace'
       ? <Workspace snapshot={snapshot} tab={tab} select={setTab} command={newCommand} task={viewTask}/>
       : surface === 'task' && latest
-        ? <TaskCard key={latest.id} run={latest} active={snapshot.active} settings={snapshot.settings} next={newCommand}
+        ? <TaskCard run={latest} active={snapshot.active} settings={snapshot.settings} next={newCommand}
           edit={() => { setCommand(latest.command); navigate('command'); }}
           setup={openSettings} perform={perform}/>
         : <CommandBar snapshot={snapshot} command={command} change={setCommand} run={value => void run(value)}

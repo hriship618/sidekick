@@ -14,6 +14,7 @@
   "packageManager": "pnpm@11.25.0",
   "scripts": {
     "dev": "node scripts/build.mjs && electron .",
+    "shortcut": "pnpm build && electron scripts/create-shortcuts.cjs",
     "build": "node scripts/build.mjs",
     "dist:win": "node scripts/make-icon.mjs && pnpm build && electron-builder --win nsis --x64 --publish never",
     "typecheck": "tsc --noEmit",

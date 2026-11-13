@@ -11,6 +11,7 @@ await Promise.all([
 await copyFile('src/index.html', 'dist/index.html');
 
 await copyFile('src/tray.png', 'dist/tray.png');
+await copyFile('resources/rove.ico', 'dist/rove.ico');
 
 await copyFile('src/credential.ps1', 'dist/credential.ps1');
 await copyFile('src/windows-desktop.ps1', 'dist/windows-desktop.ps1');

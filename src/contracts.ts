@@ -60,6 +60,7 @@ export type Run = {
   status: 'running' | 'waiting' | 'completed' | 'failed' | 'interrupted' | 'cancelled';
   message: string; steps: Step[]; description?: string; routine?: string; finishedAt?: string;
   engine?: { modelCalls: number; graphPlans: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; usageReported: boolean; reducedChars: number };
+  messages?: { id: number; role: 'user' | 'assistant'; text: string; at: string }[];
 };
 export const surfaceSchema = z.enum(['command', 'task', 'workspace']);
 export type Surface = z.infer<typeof surfaceSchema>;
@@ -68,7 +69,7 @@ export type Question =
   | { kind: 'approval'; text: string; detail: string }
   | { kind: 'text'; text: string }
   | { kind: 'login'; text: string };
-export type ActiveRun = { id: string; cancelling: boolean; question?: Question; agent?: boolean; phase?: string };
+export type ActiveRun = { id: string; cancelling: boolean; question?: Question; questionId?: string; agent?: boolean; indeterminate?: boolean; phase?: string };
 export type ChatGPTStatus = {
   busy: boolean; signingIn: boolean; connected: boolean; sharing: boolean; selectedId: string;
   profiles: { id: string; label: string; connected: boolean }[];
@@ -91,6 +92,7 @@ export interface RoveApi {
   launcherPosition(x: number): Promise<void>;
   saveSettings(settings: Settings): Promise<Settings>;
   run(command: string): Promise<void>;
+    followUp(id: string, command: string): Promise<void>;
   hide(): Promise<void>;
   show(surface: Surface): Promise<void>;
   cancel(id: string): Promise<void>;

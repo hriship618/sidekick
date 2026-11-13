@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray, safeStorage } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, screen, shell, Tray, safeStorage } from 'electron';
 import { spawn } from 'node:child_process';
 import { access, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -16,6 +16,7 @@ import { DesktopCompanion } from './desktop-companion.ts';
 import { lifecycleLog, recoverRenderer, rendererHeartbeat } from './recovery.ts';
 import { DesktopWorker } from './desktop-worker.ts';
 import { primaryButtonReader } from './windows-pointer.ts';
+import { AttentionController, attentionKey } from './attention.ts';
 
 app.setName('Rove');
 // Keep the Chromium key store, SQLite database and browser sessions at their original path.
@@ -37,7 +38,9 @@ let desktopWorker: DesktopWorker | undefined;
 let cancelSignIn = () => {};
 let publish = () => {};
 let restoreMain = () => {};
-const dimensions = { command: [540, 128], task: [580, 460], workspace: [920, 680] } as const;
+let attentionNotification: Notification | undefined;
+const appStartedAt = Date.now();
+const dimensions = { command: [540, 128], task: [600, 560], workspace: [920, 680] } as const;
 let shortcutWarning = '';
 const indexPath = join(__dirname, 'index.html');
 const indexUrl = pathToFileURL(indexPath).href;
@@ -75,7 +78,7 @@ function show(next: Surface, atCursor = false) {
   if (!window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
   clearTimeout(collapseTimer);
-  layout(next, atCursor);
+    if (next !== surface || !window.isVisible()) layout(next, atCursor);
   companion?.launcher(next === 'command');
   publish();
   window.show();
@@ -157,6 +160,7 @@ async function start() {
     if (!choice) throw new Error(state.notice || 'No ChatGPT model is available. Open Settings and check your connection.');
     return chatGPTModel(signal => chatgpt.accessToken(state.selectedId, signal), choice.slug);
   }
+  const attention = new AttentionController();
   const snapshot = (): Snapshot => {
     const settings = db.settings();
     return { settings, runs: db.recent(), shortcutWarning, surface, active: runner?.active() ?? null, credentialSaved: db.hasCredential(), chatgpt: chatgpt.status(), companion: companion?.snapshot() ?? { x: 0, y: 0, fromX: 0, fromY: 0, sequence: 0, moving: false } };
@@ -165,6 +169,21 @@ async function start() {
     const state = snapshot();
     if (window && !window.isDestroyed()) window.webContents.send('sidekick:update', state);
     if (companion && !companion.window.isDestroyed()) companion.window.webContents.send('sidekick:update', state);
+      if (!attentionKey(state.active, state.runs[0])) { attentionNotification?.close(); attentionNotification = undefined; }
+      const key = state.active?.question || Date.parse(state.runs[0]?.createdAt ?? '') >= appStartedAt
+        ? attention.take(state.active, state.runs[0]) : undefined;
+      if (key) queueMicrotask(() => {
+        const current = snapshot();
+        if (attentionKey(current.active, current.runs[0]) !== key) return;
+        // Stay in the conversation. A hidden chat gets a quiet notification, never a forced window/focus change.
+        if (window && !window.isDestroyed() && window.isVisible() && surface === 'task') return;
+        if (process.env.ROVE_DISABLE_NOTIFICATIONS !== '1' && Notification.isSupported()) {
+          attentionNotification?.close();
+          attentionNotification = new Notification({ title: 'Rove', body: 'I need a detail to continue. Open our chat to reply.', silent: true });
+          attentionNotification.on('click', () => { if (!window || window.isDestroyed()) restoreMain(); else show('task'); });
+          attentionNotification.show();
+        }
+      });
   };
 
   const registry = createRegistry({
@@ -237,6 +256,13 @@ async function start() {
     const { id, answer } = z.strictObject({ id: z.string().uuid(), answer: z.union([z.boolean(), z.string().trim().min(1).max(600)]) }).parse(value);
     engine.answer(id, answer);
   });
+    handle('sidekick:follow-up', value => {
+      if (accountBusy) throw new Error('Finish or cancel the account action first.');
+      const { id, command } = z.strictObject({ id: z.string().uuid(), command: commandSchema }).parse(value);
+      const running = engine.followUp(id, command);
+      if (surface !== 'task' || !window?.isVisible()) show('task');
+      return running;
+    });
   handle('sidekick:credential', async value => {
     const action = z.enum(['set', 'paste', 'clear', 'test']).parse(value);
     if (credentialBusy) throw new Error('A credential operation is already running.');
@@ -290,9 +316,7 @@ async function start() {
     const command = commandSchema.parse(value);
     const running = engine.run(command);
     clearTimeout(collapseTimer);
-    if (db.settings().showCompanion) { window?.hide(); companion?.launcher(false); }
-    layout('task');
-    publish();
+      show('task');
     return running;
   });
   handle('sidekick:settings', value => {
@@ -323,11 +347,17 @@ async function start() {
   let mainRestarts: number[] = [];
   const createMain = () => {
   window = new BrowserWindow({
+    icon: join(__dirname, 'rove.ico'),
     width: dimensions.command[0], height: dimensions.command[1], show: false, title: 'Rove',
     backgroundColor: '#00000000', transparent: true, frame: false, resizable: false, maximizable: false, autoHideMenuBar: true,
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
   const created = window;
+    if (process.platform === 'win32') created.setAppDetails({
+      appId: 'io.rove.desktop', appIconPath: join(__dirname, 'rove.ico'), appIconIndex: 0,
+      relaunchDisplayName: 'Rove',
+      relaunchCommand: app.isPackaged ? `"${process.execPath}"` : `"${process.execPath}" "${app.getAppPath()}"`,
+    });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('will-attach-webview', event => event.preventDefault());

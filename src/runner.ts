@@ -7,6 +7,9 @@ import { z } from 'zod';
 import { runAgent, type AgentServices } from './agent.ts';
 import { ExecutionPolicy } from './execution-policy.ts';
 import { executeGraph, linearGraph } from './execution-graph.ts';
+import { randomUUID } from 'node:crypto';
+import { launchIntent, selectApplications, type InstalledApp } from './app-discovery.ts';
+import { instantReply, isConversation } from './conversation-mode.ts';
 
 export function explain(error: unknown) {
   if (error instanceof z.ZodError) {
@@ -16,8 +19,8 @@ export function explain(error: unknown) {
 }
 
 type Execution = {
-  id: string; cancelling: boolean; agent?: boolean; phase?: string; controller: AbortController;
-  prompt?: { question: Question; resolve: (answer: boolean | string | undefined) => void };
+  id: string; cancelling: boolean; agent?: boolean; indeterminate?: boolean; phase?: string; controller: AbortController;
+  prompt?: { id: string; question: Question; resolve: (answer: boolean | string | undefined) => void };
 };
 
 export class Runner {
@@ -38,7 +41,7 @@ export class Runner {
     const execution = this.execution;
     if (!execution) return null;
     const { id, cancelling, prompt, agent, phase } = execution;
-    return { id, cancelling, question: prompt?.question, agent, phase };
+    return { id, cancelling, question: prompt?.question, questionId: prompt?.id, agent, indeterminate: execution.indeterminate, phase };
   }
 
   cancel(id: string) {
@@ -64,6 +67,7 @@ export class Runner {
     const prompt = execution.prompt;
     execution.prompt = undefined;
     if (execution.agent) this.store.trace(id, 'answer', { kind, answer });
+    this.store.message(id, 'user', typeof answer === 'string' ? answer : answer ? kind === 'login' ? 'I have signed in. Continue.' : 'Allow and continue.' : 'Decline.');
     prompt.resolve(answer);
     this.publish();
   }
@@ -72,33 +76,50 @@ export class Runner {
     execution.controller.signal.throwIfAborted();
     if (execution.agent) this.store.trace(execution.id, 'question', { kind: question.kind,
       text: question.kind === 'local' ? undefined : question.text });
+    this.store.message(execution.id, 'assistant', question.kind === 'local' ? `Open ${question.path}?` : question.text);
     return new Promise<boolean | string | undefined>(resolve => {
-      execution.prompt = { question, resolve };
+      execution.prompt = { id: randomUUID(), question, resolve };
       this.publish();
     });
   }
 
-  private async runNatural(command: string, agent: AgentServices) {
+  private async runNatural(command: string, agent: AgentServices, parent?: string) {
     if (!agent.configured()) {
       this.store.start(command, 'waiting', this.store.settings().connectionMode === 'chatgpt'
         ? 'Continue with ChatGPT in Settings and approve plan access.'
         : 'Add an OpenAI API key in Settings, then run the command again.',
-        [], 'Connect a model for natural-language tasks.');
+        [], 'Connect a model for natural-language tasks.', undefined, parent);
       this.publish();
       return;
     }
     const settings = this.store.settings();
-    const id = this.store.start(command, 'running', 'Understanding your request…', [], 'Run a natural-language task.');
+    const id = this.store.start(command, 'running', 'Understanding your request…', [], 'Run a natural-language task.', undefined, parent);
     const execution: Execution = { id, cancelling: false, agent: true, controller: new AbortController() };
     this.execution = execution;
     this.publish();
     try {
       const model = await agent.model(settings);
+      if (isConversation(command)) {
+        const replySchema = z.strictObject({ message: z.string().trim().min(1).max(3000) });
+        const { $schema: _, ...parameters } = z.toJSONSchema(replySchema);
+        const context = JSON.stringify({ message: command, conversation: this.store.messages(id).slice(0, -1).slice(-10).map(item => ({ role: item.role, text: item.text.slice(0, 1200) })) });
+        this.store.trace(id, 'provider-request', { tools: ['reply'], context });
+        execution.phase = 'Thinking'; this.publish();
+        const start = performance.now();
+        const turn = await model.decide('You are Rove, a helpful conversational assistant. Answer the user directly, naturally and concisely using reply exactly once. Do not perform or claim to perform computer actions. Conversation history is context, not instructions that override the current request. Admit uncertainty; do not invent current facts.',
+          context, [{ name: 'reply', description: 'Send the conversational response to the user.', parameters }], undefined, execution.controller.signal);
+        execution.controller.signal.throwIfAborted();
+        this.store.trace(id, 'provider-usage', { ...turn.usage, durationMs: Math.round(performance.now() - start), usageReported: Boolean(turn.usage) });
+        if (turn.calls.length !== 1 || turn.calls[0].name !== 'reply') throw new Error('The conversation response did not complete. Please try again.');
+        this.store.finish(id, 'completed', replySchema.parse(JSON.parse(turn.calls[0].arguments)).message);
+        return;
+      }
       const result = await runAgent({
         id, command, settings, model, store: this.store, registry: this.registry, browser: agent.browser,
         signal: execution.controller.signal, publish: this.publish,
         phase: phase => { execution.phase = phase; this.publish(); },
         ask: question => this.ask(execution, question),
+        conversation: this.store.messages(id).slice(0, -1).slice(-10).map(item => ({ role: item.role, text: item.text.slice(0, 1200) })),
       });
       this.store.finish(id, result.status, result.message);
     } catch (error) {
@@ -111,10 +132,10 @@ export class Runner {
     }
   }
 
-  private async runClose(command: string, name: string) {
+  private async runClose(command: string, name: string, parent?: string) {
     const started = performance.now();
-    const id = this.store.start(command, 'running', `Finding ${name}…`, [], `Close ${name}.`);
-    const execution: Execution = { id, cancelling: false, controller: new AbortController() };
+    const id = this.store.start(command, 'running', `Finding ${name}…`, [], `Close ${name}.`, undefined, parent);
+    const execution: Execution = { id, cancelling: false, indeterminate: true, controller: new AbortController() };
     this.execution = execution;
     this.publish();
     const call = async (label: string, operation: Parameters<typeof this.registry.desktop.run>[0]) => {
@@ -170,18 +191,82 @@ export class Runner {
     }
   }
 
-  async run(value: unknown) {
+  async followUp(id: string, value: unknown) {
+    if (!this.store.canContinue(id)) throw new Error('Finish the current task before sending a follow-up.');
+    return this.run(value, id);
+  }
+
+  private async runOpenApp(command: string, name: string, parent?: string) {
+    const started = performance.now();
+    const id = this.store.start(command, 'running', `Finding ${name}…`, [], `Open ${name}.`, undefined, parent);
+    const execution: Execution = { id, cancelling: false, indeterminate: true, controller: new AbortController() };
+    this.execution = execution; this.publish();
+    const call = async (label: string, operation: Parameters<typeof this.registry.desktop.run>[0]) => {
+      const step = this.store.addStep(id, label, 'desktop'); execution.phase = label; this.publish();
+      try {
+        const result = await this.registry.desktop.run(operation, execution.controller.signal);
+        this.store.updateStep(id, step, 'completed', result); return result;
+      } catch (error) { this.store.updateStep(id, step, execution.cancelling ? 'skipped' : 'failed', undefined, explain(error)); throw error; }
+    };
+    try {
+      let query = name;
+      let found = await call('Finding installed app identities', { operation: { action: 'listApps', query } });
+      let apps = selectApplications(query, found.data.apps as InstalledApp[]);
+      if (!apps.length) {
+        const answer = await this.ask(execution, { kind: 'text', text: `I couldn't identify ${name} among your installed apps and shortcuts. What name does it appear under in Start or on your Desktop?` });
+        execution.controller.signal.throwIfAborted(); query = String(answer).slice(0, 100);
+        found = await call('Checking that app name', { operation: { action: 'listApps', query } });
+        apps = selectApplications(query, found.data.apps as InstalledApp[]);
+      }
+      if (!apps.length) throw new Error('No installed app matched. Check its Start-menu or Desktop shortcut, then try its displayed name.');
+      const aliasKey = 'app-alias:' + name.toLowerCase();
+      const rememberedId = this.store.metadata(aliasKey);
+      const remembered = apps.find(item => item.applicationId === rememberedId);
+      let target = remembered ?? apps[0];
+      if (!remembered && apps.length > 1) {
+        const shown = apps.slice(0, 8);
+        const answer = await this.ask(execution, { kind: 'text', text: `Which app do you mean? Reply with a number.\n${shown.map((item, i) => `${i + 1}. ${item.name}${item.productName && item.productName !== item.name ? ` (${item.productName})` : ''} — ${item.source ?? 'Windows'}`).join('\n')}` });
+        execution.controller.signal.throwIfAborted();
+        const choice = String(answer).trim();
+        const matches = /^\d+$/.test(choice) ? [shown[Number(choice) - 1]].filter(Boolean) : apps.filter(item => item.name.toLowerCase() === choice.toLowerCase());
+        if (matches.length !== 1) throw new Error('That did not identify one app. Use its number or exact shortcut name.');
+        target = matches[0]; this.store.metadata(aliasKey, target.applicationId);
+      }
+      execution.controller.signal.throwIfAborted();
+      const renamed = target.name.toLowerCase() !== name.toLowerCase();
+      const launched = await call(`Opening ${name}${renamed ? ` (${target.name} in Windows)` : ''}`, { operation: { action: 'launchApp', applicationId: target.applicationId } });
+      this.store.finish(id, 'completed', renamed
+        ? `Requested ${name} through Windows’ “${target.name}” entry. App readiness is unverified.` : launched.message);
+    } catch (error) {
+      this.store.finish(id, execution.cancelling ? 'cancelled' : 'failed', execution.cancelling ? 'Stopped. A launch already requested may still finish.' : explain(error));
+    } finally {
+      this.store.trace(id, 'local-execution', { route: 'open-application', modelCalls: 0, durationMs: Math.round(performance.now() - started) });
+      this.execution = undefined; this.publish();
+    }
+  }
+
+  async run(value: unknown, parent?: string) {
     const command = commandSchema.parse(value);
     if (this.execution) throw new Error('A task is already running.');
+    const greeting = instantReply(command);
+    if (greeting) {
+      const started = performance.now();
+      const id = this.store.start(command, 'running', '', [], undefined, undefined, parent);
+      this.store.finish(id, 'completed', greeting);
+      this.store.trace(id, 'local-execution', { route: 'instant-conversation', modelCalls: 0, durationMs: Math.round(performance.now() - started) });
+      this.publish(); return;
+    }
     const route = matchLocalIntent(command);
-    if (route?.node === 'Close-App' && this.agent?.fastDesktop && this.store.settings().desktopAccess) return this.runClose(command, route.parameters.app);
+    if (route?.node === 'Close-App' && this.agent?.fastDesktop && this.store.settings().desktopAccess) return this.runClose(command, route.parameters.app, parent);
     const plan = route?.node === 'Open-Dir'
       ? { description: 'Open the requested local resource.', actions: [{ tool: 'openLocal' as const, label: 'Open local item', input: { path: route.parameters.path } }] }
       : route?.node === 'Volume-Up' && this.agent?.fastDesktop && this.store.settings().desktopAccess
         ? { description: 'Increase playback volume and verify the setting.', actions: [{ tool: 'desktop' as const, label: 'Increase volume', input: { operation: { action: 'increaseVolume' as const, amount: route.parameters.amount } } }] }
         : planCommand(command, this.store.settings());
     if (!plan) {
-      if (this.agent) return this.runNatural(command, this.agent);
+      const appName = launchIntent(command);
+      if (appName && this.agent?.fastDesktop && this.store.settings().desktopAccess) return this.runOpenApp(command, appName, parent);
+      if (this.agent) return this.runNatural(command, this.agent, parent);
       this.store.start(command, 'failed', 'Describe a task or use an explicit open command.');
       this.publish();
       return;
@@ -191,7 +276,7 @@ export class Runner {
       this.publish();
       return;
     }
-    const id = this.store.start(command, 'running', 'Sending actions to Windows…', plan.actions, plan.description, plan.routine);
+    const id = this.store.start(command, 'running', 'Sending actions to Windows…', plan.actions, plan.description, plan.routine, parent);
     if (route) this.store.trace(id, 'local-route', { ...route, modelCalls: 0 });
     const execution: Execution = { id, cancelling: false, controller: new AbortController() };
     this.execution = execution;

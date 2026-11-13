@@ -1,0 +1,11 @@
+{
+  "packaged": false,
+  "closeDurationMs": 265,
+  "greetingMedianMs": 10.536099999997532,
+  "greetingP95Ms": 41.55399999999827,
+  "greetingSamples": 20,
+  "modelCalls": 0,
+  "steps": 2,
+  "rendererRecovery": true,
+  "companionRecovery": true
+}

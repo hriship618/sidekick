@@ -71,6 +71,9 @@ button { display: inline-flex; align-items: center; justify-content: center; gap
 .command-footer kbd:nth-of-type(3), .command-footer kbd:nth-of-type(4) { margin-left: 6px; }
 kbd { display: inline-block; background: #292423; border: 1px solid var(--line); padding: 1px 4px; border-radius: 4px; color: var(--muted); font: 11px Consolas, monospace; }
 .task-surface { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.task-overview { flex: 0 0 auto; padding: 12px 20px 0; }
+.task-overview .task-heading h1 { font-size: 16px; margin: 5px 0 8px; }
+.task-overview .progress-section { margin: 8px 0 0; }
 .task-scroll { flex: 1; min-height: 0; overflow: auto; padding: 20px; }
 .task-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .task-heading > div { min-width: 0; }
@@ -164,6 +167,26 @@ label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
 .actions.wrap { flex-wrap: wrap; }
 .approval-detail { white-space: pre-wrap; }
 .reply { margin-top: 8px; }
+.conversation { display: flex; flex-direction: column; gap: 14px; margin: 12px 0 18px; }
+.chat-message { max-width: 88%; padding: 10px 14px; border-radius: 16px; overflow-wrap: anywhere; }
+.chat-message.user { align-self: flex-end; background: #353031; }
+.chat-message.assistant { align-self: stretch; max-width: 100%; padding: 5px 2px; background: transparent; }
+.chat-message p { margin: 0; white-space: pre-wrap; line-height: 1.65; font-size: 14px; }
+.chat-speaker { display: none; }
+.chat-state { font-size: 12px; color: var(--muted); }
+.task-overview .companion { width: 32px; height: 32px; flex-basis: 32px; }
+.chat-working { color: var(--muted); font-size: 12px; padding: 0 5px; }
+.chat-question { background: transparent; border-color: #66527c; }
+.chat-question h2 { font-size: 12px; }
+.chat-footer { display: flex; flex-direction: column; align-items: stretch; gap: 5px; border-top: 0; background: transparent; }
+.chat-compose { display: flex; gap: 8px; align-items: center; padding: 6px; background: #302b2a; border: 1px solid #514844; border-radius: 17px; }
+.chat-compose:focus-within { border-color: #a78bfa; }
+.chat-compose input { flex: 1; min-width: 0; border: 0; border-radius: 12px; padding: 8px 9px; background: transparent; color: var(--text); }
+.chat-compose input:focus-visible { outline-offset: 0; }
+.chat-send { width: 34px; height: 34px; padding: 0; border-radius: 11px; font-size: 22px; }
+.task-surface .details { border: 0; background: transparent; margin-top: 14px; }
+.task-surface .details summary { padding-left: 0; font-size: 11px; }
+.chat-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .reply input { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; color: var(--text); background: var(--bg); }
 .task-footer { flex-wrap: wrap; }
 .welcome-dialog { max-width: min(420px, calc(100% - 32px)); color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }

@@ -76,6 +76,42 @@ public class RoveNative {
 '@
 
 } catch { @{error='Windows desktop helper could not initialize.'}|ConvertTo-Json -Compress;exit 1 }
+$script:RoveApps=$null
+$script:RoveAppsAt=[DateTime]::MinValue
+function Get-RoveApplications {
+ if($null -ne $script:RoveApps -and ([DateTime]::UtcNow-$script:RoveAppsAt).TotalMinutes -lt 5){return}
+ $catalog=@{}
+ function Add-RoveApp($name,$target,$source,$kind) {
+  $hash=[Security.Cryptography.SHA256]::Create()
+  try{$key='app:'+([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes(($kind+':'+$target).ToLowerInvariant()))).Replace('-','').ToLowerInvariant()).Substring(0,24)}finally{$hash.Dispose()}
+  $product='';$description=''
+  if($kind -eq 'shortcut') {
+   try{$link=$script:RoveShell.CreateShortcut($target);$identityPath=[string]$link.TargetPath
+    if($identityPath -and (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
+     $version=[Diagnostics.FileVersionInfo]::GetVersionInfo($identityPath);$product=$version.ProductName;$description=$version.FileDescription
+    }
+   }catch{$identityPath=''}
+  }else{$identityPath=$target}
+  $hint=if($kind -eq 'shortcut'){[IO.Path]::GetFileNameWithoutExtension($identityPath)}else{$identityPath}
+  if($kind -eq 'shortcut' -and $identityPath -match '\\WindowsApps\\([^\\]+)\\'){$hint+=' '+$Matches[1]}
+  $catalog[$key]=@{applicationId=$key;name=[string]$name;target=[string]$identityPath;identityHint=[string]$hint;productName=[string]$product;description=[string]$description;source=$source;kind=$kind;launchTarget=$target}
+ }
+ try {
+  foreach($entry in Get-StartApps -ErrorAction Stop) {
+   if($entry.AppID -match '^[A-Za-z0-9._!{}-]+$'){Add-RoveApp $entry.Name $entry.AppID 'Start menu' 'package'}
+  }
+ }catch{}
+ try {
+  $script:RoveShell=New-Object -ComObject WScript.Shell
+  $roots=@([Environment]::GetFolderPath('Desktop'),[Environment]::GetFolderPath('CommonDesktopDirectory'),[Environment]::GetFolderPath('Programs'),[Environment]::GetFolderPath('CommonPrograms'))|Select-Object -Unique
+  foreach($root in $roots) {
+   if($root -and (Test-Path -LiteralPath $root)) {
+    foreach($link in Get-ChildItem -LiteralPath $root -Filter '*.lnk' -Recurse -File -ErrorAction SilentlyContinue){Add-RoveApp $link.BaseName $link.FullName 'Windows shortcut' 'shortcut'}
+   }
+  }
+ }finally{if($script:RoveShell){[void][Runtime.InteropServices.Marshal]::ReleaseComObject($script:RoveShell);$script:RoveShell=$null}}
+ $script:RoveApps=$catalog;$script:RoveAppsAt=[DateTime]::UtcNow
+}
 function Invoke-RoveRequest($request) {
 try {
   $data=@{}
@@ -85,7 +121,27 @@ try {
     try { $version=$process.MainModule.FileVersionInfo;$product=[string]$version.ProductName;$description=[string]$version.FileDescription } catch {}
     return @{processName=[string]$process.ProcessName;productName=$product;description=$description}
   }
-  if ($request.action -eq 'increaseVolume') {
+  if ($request.action -eq 'listApps') {
+    Get-RoveApplications
+    $terms=([string]$request.query).ToLowerInvariant() -split '\s+'
+    $apps=@($script:RoveApps.Values | Where-Object {
+      $identity=($_.name+' '+$_.productName+' '+$_.description+' '+$_.identityHint).ToLowerInvariant()
+      $matches=$true;foreach($term in $terms){if(!$identity.Contains($term)){$matches=$false;break}};$matches
+    } | Sort-Object name | Select-Object -First 40 | ForEach-Object {@{applicationId=$_.applicationId;name=$_.name;productName=$_.productName;description=$_.description;target=$_.target;source=$_.source}})
+    $data=@{apps=$apps;catalogCount=$script:RoveApps.Count;catalogBuiltAt=$script:RoveAppsAt.ToString('o')}
+    $message='Observed installed app identities from Start apps, Desktop and Start-menu shortcuts. Match product names and target metadata; ask if ambiguous.'
+  } elseif ($request.action -eq 'launchApp') {
+    if($null -eq $script:RoveApps -or !$script:RoveApps.ContainsKey([string]$request.applicationId)){throw 'That app identity is not current. List installed apps before launching.'}
+    $entry=$script:RoveApps[[string]$request.applicationId]
+    if($entry.kind -eq 'shortcut') {
+      if(!(Test-Path -LiteralPath $entry.launchTarget -PathType Leaf)){throw 'The observed shortcut no longer exists. List installed apps again.'}
+      Start-Process -FilePath $entry.launchTarget -ErrorAction Stop | Out-Null
+    }else {
+      if($entry.launchTarget -notmatch '^[A-Za-z0-9._!{}-]+$'){throw 'The observed app identifier is invalid.'}
+      Start-Process -FilePath (Join-Path $env:SystemRoot 'explorer.exe') -ArgumentList @('shell:AppsFolder\'+$entry.launchTarget) -ErrorAction Stop | Out-Null
+    }
+    return @{verification='dispatch-only';message=('Launch requested for '+$entry.name+'. App readiness is unverified.');data=@{launchRequested=$true;windowVerified=$false;applicationId=$entry.applicationId;name=$entry.name}}
+  } elseif ($request.action -eq 'increaseVolume') {
     $levels=[RoveAudio]::Increase([int]$request.amount)
     $data=@{beforePercent=$levels[0];afterPercent=$levels[1];settingVerified=$true;audioAudibilityVerified=$false}
     $message='Verified the default playback volume setting. Muting and actual sound audibility were not changed or verified.'

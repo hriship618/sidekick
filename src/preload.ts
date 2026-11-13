@@ -11,6 +11,7 @@ const api: RoveApi = {
   snapshot: () => ipcRenderer.invoke('sidekick:snapshot'),
   saveSettings: settings => ipcRenderer.invoke('sidekick:settings', settings),
   run: command => ipcRenderer.invoke('sidekick:run', command),
+  followUp: (id, command) => ipcRenderer.invoke('sidekick:follow-up', { id, command }),
   hide: () => ipcRenderer.invoke('sidekick:hide'),
   show: surface => ipcRenderer.invoke('sidekick:show', surface),
   cancel: id => ipcRenderer.invoke('sidekick:cancel', id),

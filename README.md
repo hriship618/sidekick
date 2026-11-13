@@ -4,6 +4,8 @@
 
 Describe the outcome you want. Rove works across browser pages, local files, Windows apps, and SSH workspaces, shows real progress, and asks when it needs a detail. Press **Ctrl+Alt+Space** to summon it; the companion stays quietly by your taskbar while it works.
 
+Messages stay in one chat, with a persistent composer for replies and follow-ups. A dismissed chat stays dismissed; new questions use a quiet notification instead of grabbing focus. Greetings reply immediately without an AI call, and informational chat uses a lightweight response path rather than the task-execution loop. App launches match Windows product/package identities, even when the shortcut has a different name.
+
 ## The idea: stop making AI rethink every step
 
 A useful assistant should get things done with fewer model calls and less repeated context. Rove separates **planning, execution, and evidence**:
@@ -45,6 +47,8 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
+For a Desktop and Start-menu icon, run `pnpm shortcut` once. Then open **Rove** from either icon and pin it to your taskbar. These shortcuts use the built development app, so keep the project folder in place. They do not require a terminal each time you launch Rove.
+
 Use the launcher's **Settings** button to connect ChatGPT if your account supports access, or enter an OpenAI API key. API usage is billed separately. Open **Rove browser** in Settings for web tasks, and create repeatable workflows under **Saved routines**.
 
 AI tasks send your request and relevant task information to OpenAI. History and full evidence stay locally; credentials use Windows protection where available. Rove is not fully offline.
@@ -60,3 +64,5 @@ Local benchmarks showed a **141 ms median** warm app close with **zero model cal
 [Benchmarks](docs/benchmarks/README.md) · [Research and implementation](docs/RESEARCH.md) · [Architecture](docs/FLOW_ARCHITECTURE.md) · [Development](docs/DEVELOPMENT.md) · [Learning plan](docs/ACTION_GRAPH_PLAN.md)
 
 [MIT license](LICENSE)
+
+Reusable skill/tool packs are a future extension; [MCP and pack compatibility](docs/PLUGINS.md) explains the proposed approach and current limits.

@@ -25,6 +25,11 @@ export class Store {
         id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), at TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS trace_run_kind ON trace(run_id, kind);
+      CREATE TABLE IF NOT EXISTS conversation_messages (
+        id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), role TEXT NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS messages_run ON conversation_messages(run_id, id);
+      CREATE TABLE IF NOT EXISTS run_parents (run_id TEXT PRIMARY KEY REFERENCES runs(id), parent_id TEXT NOT NULL REFERENCES runs(id));
       CREATE TABLE IF NOT EXISTS evidence (
         id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), kind TEXT NOT NULL, data BLOB NOT NULL
       );
@@ -76,7 +81,7 @@ export class Store {
       .run(JSON.stringify(settings));
   }
 
-  start(command: string, status: Run['status'], message: string, actions: Action[] = [], description?: string, routine?: string) {
+  start(command: string, status: Run['status'], message: string, actions: Action[] = [], description?: string, routine?: string, parent?: string) {
     this.recentCache = undefined;
     const id = randomUUID();
     this.transaction(() => {
@@ -85,8 +90,26 @@ export class Store {
         .run(id, description ?? null, routine ?? null, status === 'running' ? null : new Date().toISOString());
       const insert = this.db.prepare("INSERT INTO steps VALUES (?, ?, ?, ?, 'queued', NULL, NULL)");
       actions.forEach((action, index) => insert.run(id, index, action.label, action.tool));
+      if (parent) this.db.prepare('INSERT INTO run_parents VALUES (?, ?)').run(id, parent);
+      this.message(id, 'user', command);
+      if (status !== 'running' && message) this.message(id, 'assistant', message);
     });
     return id;
+  }
+
+  canContinue(id: string) { return Boolean(this.db.prepare("SELECT 1 FROM runs WHERE id = ? AND status != 'running'").get(id)); }
+
+  message(id: string, role: 'user' | 'assistant', text: string) {
+    this.recentCache = undefined;
+    this.db.prepare('INSERT INTO conversation_messages (run_id, role, text, at) VALUES (?, ?, ?, ?)')
+      .run(id, role, text.slice(0, 4096), new Date().toISOString());
+  }
+
+  messages(id: string): NonNullable<Run['messages']> {
+    return this.db.prepare(`WITH RECURSIVE chain(id, depth) AS (
+      SELECT ?, 0 UNION ALL SELECT p.parent_id, c.depth + 1 FROM run_parents p JOIN chain c ON p.run_id = c.id WHERE c.depth < 7
+    ) SELECT m.id, m.role, m.text, m.at FROM conversation_messages m JOIN chain c ON m.run_id = c.id ORDER BY c.depth DESC, m.id ASC`).all(id)
+      .slice(-80).map(row => ({ id: Number(row.id), role: row.role as 'user' | 'assistant', text: String(row.text), at: String(row.at) }));
   }
 
   metadata(key: string, value?: string): string | undefined {
@@ -167,6 +190,7 @@ export class Store {
       }
       this.db.prepare('UPDATE runs SET status = ?, message = ? WHERE id = ?').run(status, message, id);
       this.db.prepare('UPDATE run_metadata SET finished_at = ? WHERE run_id = ?').run(new Date().toISOString(), id);
+      this.message(id, 'assistant', message);
     });
   }
 
@@ -187,6 +211,7 @@ export class Store {
       routine: row.routine ? String(row.routine) : undefined,
       finishedAt: row.finished_at ? String(row.finished_at) : undefined,
       status: row.status as Run['status'], message: String(row.message),
+      messages: this.messages(String(row.id)),
       engine: (() => { const data = metrics.get(row.id)!; return Number(data.recorded) ? {
         modelCalls: Number(data.modelCalls), graphPlans: Number(data.graphPlans), inputTokens: Number(data.inputTokens),
         cachedInputTokens: Number(data.cachedInputTokens), outputTokens: Number(data.outputTokens),
