@@ -145,14 +145,14 @@ export class ChatGPTConnection {
           response.writeHead(200, {
             'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
             'content-security-policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-          }).end('<!doctype html><title>Sidekick</title><h1>Return to Sidekick</h1><p>Your sign-in response has been received.</p>');
+          }).end('<!doctype html><title>Rove</title><h1>Return to Rove</h1><p>Your sign-in response has been received.</p>');
           finish(url);
         });
         const authorization = new URL(metadata.authorization_endpoint!);
         authorization.search = new URLSearchParams({
           client_id: client.client_id, response_type: 'code', redirect_uri: redirect, scope: scopes, resource,
           state, nonce, code_challenge_method: 'S256', code_challenge: challenge, ext_agent_host_id: this.hostId,
-          ...(!oldClient ? { agent_name_hint: 'Sidekick' } : {}),
+          ...(!oldClient ? { agent_name_hint: 'Rove' } : {}),
           ...(profile?.idToken ? { id_token_hint: profile.idToken } : {}),
           ...(profile?.email ? { login_hint: profile.email } : {}),
           ...(profile && !profile.scopes.includes(grant) ? { prompt: 'consent' } : {}),
@@ -275,7 +275,7 @@ export class ChatGPTConnection {
       })) }).parse(await response.json());
       if (revision !== this.catalogRevision) return;
       this.models = catalog.models.filter(model => model.visibility === 'list').map(model => ({ slug: model.slug, name: model.display_name }));
-      this.notice = this.models.length ? '' : 'This ChatGPT account has no available models for Sidekick.';
+      this.notice = this.models.length ? '' : 'This ChatGPT account has no available models for Rove.';
     } catch {
       if (revision !== this.catalogRevision) return;
       this.models = [];

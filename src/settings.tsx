@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { RoutineSettings } from './routine-settings.tsx';
 import type { ChatGPTAction, ChatGPTStatus, Settings } from './contracts.ts';
 
 export function SettingsPanel({ original, credentialSaved, chatgpt }: { original: Settings; credentialSaved: boolean; chatgpt: ChatGPTStatus }) {
@@ -48,15 +49,15 @@ export function SettingsPanel({ original, credentialSaved, chatgpt }: { original
   return <form className="settings" onSubmit={save} onChange={() => setSaved(false)}>
     <fieldset>
       <legend>AI connection</legend>
-      <label>Use for Sidekick tasks
+      <label>Use for Rove tasks
         <select value={draft.connectionMode} disabled={planBusy || chatgpt.busy} onChange={event => setDraft({ ...draft, connectionMode: event.target.value === 'apiKey' ? 'apiKey' : 'chatgpt' })}>
           <option value="chatgpt">ChatGPT plan</option>
           <option value="apiKey">OpenAI API key (separate billing)</option>
         </select>
       </label>
-      {draft.connectionMode !== original.connectionMode && <p className="muted">Select Save settings to switch how Sidekick runs tasks.</p>}
+      {draft.connectionMode !== original.connectionMode && <p className="muted">Select Save settings to switch how Rove runs tasks.</p>}
       {draft.connectionMode === 'chatgpt' ? <>
-        <p className="muted">{chatgpt.sharing ? 'Using ChatGPT plan.' : 'Connect an eligible ChatGPT account to use your plan allowance in Sidekick.'}</p>
+        <p className="muted">{chatgpt.sharing ? 'Using ChatGPT plan.' : 'Connect an eligible ChatGPT account to use your plan allowance in Rove.'}</p>
         {chatgpt.profiles.length > 0 && <label>ChatGPT account
           <select value={chatgpt.selectedId} disabled={chatgpt.busy || planBusy} onChange={event => void plan({ action: 'select', id: event.target.value })}>
             {!chatgpt.selectedId && <option value="">Choose an account</option>}
@@ -99,7 +100,7 @@ export function SettingsPanel({ original, credentialSaved, chatgpt }: { original
     </fieldset>
     {chatgpt.welcome && <dialog ref={modal} className="welcome-dialog" onCancel={event => { event.preventDefault(); void plan({ action: 'dismiss' }); }}>
       <h2>You’re using your ChatGPT plan</h2>
-      <p>Eligible Sidekick tasks use your ChatGPT allowance. Manage your limits and credit use in ChatGPT settings.</p>
+      <p>Eligible Rove tasks use your ChatGPT allowance. Manage your limits and credit use in ChatGPT settings.</p>
       <div className="actions wrap">
         <button className="secondary" type="button" onClick={() => void plan({ action: 'usage' })}>Manage usage</button>
         <button className="primary" type="button" onClick={() => void plan({ action: 'dismiss' })}>Got it</button>
@@ -107,15 +108,22 @@ export function SettingsPanel({ original, credentialSaved, chatgpt }: { original
     </dialog>}
     <fieldset disabled={connectionBusy || saving}>
       <legend>Browser</legend>
-      <div className="actions wrap"><button className="secondary" type="button" onClick={() => void connect('browser')}>Open Sidekick browser</button>
+      <div className="actions wrap"><button className="secondary" type="button" onClick={() => void connect('browser')}>Open Rove browser</button>
         <span className="muted">Microsoft Edge · dedicated profile</span></div>
-      <p className="muted">Sign in directly in this browser when a website needs it. Summon Sidekick to return.</p>
+      <p className="muted">Sign in directly in this browser when a website needs it. Summon Rove to return.</p>
     </fieldset>
     {error && <p className="notice" role="alert">{error}</p>}
+    <RoutineSettings value={draft.routines} change={routines => { setDraft({ ...draft, routines }); setSaved(false); }}/>
     <fieldset disabled={saving}>
       <legend>Desktop</legend>
+      <div className="toggles"><label><input type="checkbox" checked={draft.desktopAccess} onChange={event => setDraft({ ...draft, desktopAccess: event.target.checked })}/> Desktop access</label></div>
+      <p className="hint">Allow requested Windows window controls, accessibility actions, process management, and PowerShell commands using your Windows account.</p>
       <label>Global shortcut<input value={draft.shortcut} maxLength={45} required onChange={e => setDraft({ ...draft, shortcut: e.target.value })}/></label>
+      <label>Preferred taskbar side<select value={draft.restingCorner.endsWith('right') ? 'bottom-right' : 'bottom-left'} onChange={event => setDraft({ ...draft, restingCorner: event.target.value as Settings['restingCorner'], restingPosition: null })}>
+        <option value="bottom-right">Right</option><option value="bottom-left">Left</option>
+      </select></label>
       <div className="toggles">
+        <label><input type="checkbox" checked={draft.quietMode} onChange={event => setDraft({ ...draft, quietMode: event.target.checked })}/> Quiet mode</label>
         <label><input type="checkbox" checked={draft.showCompanion} onChange={e => setDraft({ ...draft, showCompanion: e.target.checked })}/> Show companion</label>
         <label><input type="checkbox" checked={draft.animateCompanion} disabled={!draft.showCompanion}
           onChange={e => setDraft({ ...draft, animateCompanion: e.target.checked })}/> Animate companion</label>
@@ -131,4 +139,3 @@ export function SettingsPanel({ original, credentialSaved, chatgpt }: { original
 export function errorText(error: unknown) {
   return String(error instanceof Error ? error.message : error).replace(/^Error invoking remote method '[^']+': Error: /, '');
 }
-

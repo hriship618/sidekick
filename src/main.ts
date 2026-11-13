@@ -12,8 +12,20 @@ import { BrowserSession } from './browser.ts';
 import { chatGPTModel, openAIModel, testModel } from './model.ts';
 import { pasteKey, readKey, requestKey } from './credentials.ts';
 import { ChatGPTConnection } from './chatgpt.ts';
+import { DesktopCompanion } from './desktop-companion.ts';
+import { lifecycleLog, recoverRenderer, rendererHeartbeat } from './recovery.ts';
+import { DesktopWorker } from './desktop-worker.ts';
+import { primaryButtonReader } from './windows-pointer.ts';
+
+app.setName('Rove');
+// Keep the Chromium key store, SQLite database and browser sessions at their original path.
+// Explicit profiles (tests and development sandboxes) remain fully isolated.
+if (!app.commandLine.hasSwitch('user-data-dir')) app.setPath('userData', join(app.getPath('appData'), 'Sidekick'));
+if (process.platform === 'win32') app.setAppUserModelId('io.rove.desktop');
 
 let window: BrowserWindow | undefined;
+let companion: DesktopCompanion | undefined;
+let collapseTimer: ReturnType<typeof setTimeout> | undefined;
 let tray: Tray | undefined;
 let quitting = false;
 let store: Store | undefined;
@@ -21,9 +33,11 @@ let registered = '';
 let surface: Surface = 'command';
 let runner: Runner | undefined;
 let browser: BrowserSession | undefined;
+let desktopWorker: DesktopWorker | undefined;
 let cancelSignIn = () => {};
 let publish = () => {};
-const dimensions = { command: [580, 212], task: [580, 460], workspace: [920, 680] } as const;
+let restoreMain = () => {};
+const dimensions = { command: [540, 128], task: [580, 460], workspace: [920, 680] } as const;
 let shortcutWarning = '';
 const indexPath = join(__dirname, 'index.html');
 const indexUrl = pathToFileURL(indexPath).href;
@@ -32,6 +46,13 @@ function layout(next: Surface, atCursor = false) {
   if (!window) return;
   const previous = surface;
   surface = next;
+  try { window.setShape([]); } catch { /* Unsupported platforms retain the compact native bounds. */ }
+  if (next !== 'workspace' && companion) {
+    window.setAlwaysOnTop(true);
+    const height = dimensions[next][1] - (next === 'command' && !store?.settings().showCompanion ? 32 : 0);
+    window.setBounds(companion.panel(dimensions[next][0], height, atCursor));
+    return;
+  }
   const bounds = window.getBounds();
   const display = atCursor ? screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
     : screen.getDisplayMatching(bounds);
@@ -53,7 +74,9 @@ function layout(next: Surface, atCursor = false) {
 function show(next: Surface, atCursor = false) {
   if (!window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
+  clearTimeout(collapseTimer);
   layout(next, atCursor);
+  companion?.launcher(next === 'command');
   publish();
   window.show();
   window.focus();
@@ -62,6 +85,7 @@ function show(next: Surface, atCursor = false) {
 }
 
 function summon() {
+  if (!window || window.isDestroyed()) { restoreMain(); return; }
   show(runner?.active() ? 'task' : 'command', true);
 }
 
@@ -95,6 +119,12 @@ async function launchTerminal(args: string[]) {
 }
 
 async function start() {
+  const logs = join(app.getPath('userData'), 'logs');
+  lifecycleLog(logs, 'start', { version: app.getVersion(), packaged: app.isPackaged });
+  const helper = (name: string) => app.isPackaged ? join(process.resourcesPath, name) : join(__dirname, name);
+  const worker = new DesktopWorker(helper('windows-desktop.ps1'));
+  desktopWorker = worker;
+  void worker.execute({ operation: { action: 'listWindows', query: 'Rove' } }).catch(() => lifecycleLog(logs, 'desktop-helper-unavailable'));
   const db = new Store(join(app.getPath('userData'), 'sidekick.sqlite'));
   store = db;
   const session = new BrowserSession(join(app.getPath('userData'), 'browser-profile'));
@@ -129,10 +159,12 @@ async function start() {
   }
   const snapshot = (): Snapshot => {
     const settings = db.settings();
-    return { settings, runs: db.recent(), shortcutWarning, surface, active: runner?.active() ?? null, credentialSaved: db.hasCredential(), chatgpt: chatgpt.status() };
+    return { settings, runs: db.recent(), shortcutWarning, surface, active: runner?.active() ?? null, credentialSaved: db.hasCredential(), chatgpt: chatgpt.status(), companion: companion?.snapshot() ?? { x: 0, y: 0, fromX: 0, fromY: 0, sequence: 0, moving: false } };
   };
   publish = () => {
-    if (window && !window.isDestroyed()) window.webContents.send('sidekick:update', snapshot());
+    const state = snapshot();
+    if (window && !window.isDestroyed()) window.webContents.send('sidekick:update', state);
+    if (companion && !companion.window.isDestroyed()) companion.window.webContents.send('sidekick:update', state);
   };
 
   const registry = createRegistry({
@@ -143,8 +175,13 @@ async function start() {
       if (error) throw new Error(error);
     },
     launchTerminal,
+    desktop: async (input, signal) => {
+      if (!db.settings().desktopAccess) throw new Error('The desktop access setting is off. Enable Desktop access in Settings to use Windows controls.');
+      return worker.execute(input, signal);
+    },
   });
   const engine = new Runner(db, registry, publish, {
+    fastDesktop: true,
     configured: () => db.settings().connectionMode === 'chatgpt' ? chatgpt.status().sharing : db.hasCredential(),
     model: async settings => settings.connectionMode === 'chatgpt'
       ? planModel(settings) : openAIModel(await readKey(db), settings.model),
@@ -153,16 +190,47 @@ async function start() {
   runner = engine;
   const handle = (channel: string, handler: (value: unknown) => unknown) => {
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
-      if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
-          || event.senderFrame?.url !== indexUrl) throw new Error('Untrusted IPC sender.');
-      const expected = ['sidekick:snapshot', 'sidekick:hide', 'sidekick:browser'].includes(channel) ? 0 : 1;
+      const isPanel = window && event.sender === window.webContents && event.senderFrame === window.webContents.mainFrame && event.senderFrame?.url === indexUrl;
+      const isCompanion = companion && event.sender === companion.window.webContents
+        && event.senderFrame === companion.window.webContents.mainFrame && event.senderFrame?.url === indexUrl + '#companion';
+      const overlayChannels = ['sidekick:snapshot', 'sidekick:show', 'sidekick:cancel', 'sidekick:companion-layout', 'sidekick:companion-hit', 'sidekick:companion-move', 'sidekick:companion-grab', 'sidekick:heartbeat'];
+      if (!isPanel && !(isCompanion && overlayChannels.includes(channel))) throw new Error('Untrusted IPC sender.');
+      if (channel.startsWith('sidekick:companion-') && !isCompanion) throw new Error('Only the companion can update its overlay.');
+      const expected = ['sidekick:snapshot', 'sidekick:hide', 'sidekick:browser', 'sidekick:heartbeat'].includes(channel) ? 0 : 1;
       if (args.length !== expected) throw new Error('Invalid IPC arguments.');
+      if (channel === 'sidekick:heartbeat') { rendererHeartbeat(event.sender); return; }
       try { return await handler(args[0]); }
       catch (error) { throw new Error(explain(error)); }
     });
   };
   handle('sidekick:snapshot', snapshot);
-  handle('sidekick:hide', () => window?.hide());
+  handle('sidekick:heartbeat', () => {});
+  handle('sidekick:hide', () => {
+    clearTimeout(collapseTimer);
+    if (window && runner?.active()) companion?.depart(window.getBounds());
+    window?.hide();
+    companion?.launcher(false);
+  });
+  handle('sidekick:companion-layout', value => {
+    const region = z.strictObject({ x: z.number().finite(), y: z.number().finite(), width: z.number().min(0).max(2000), height: z.number().min(0).max(2000) });
+    companion?.regions(z.array(region).max(16).parse(value));
+  });
+  handle('sidekick:companion-hit', value => companion?.hit(z.boolean().parse(value)));
+  handle('sidekick:companion-grab', value => {
+    const offset = z.strictObject({ x: z.number().finite().min(0).max(64), y: z.number().finite().min(0).max(64) }).parse(value);
+    return companion?.grabRelative(offset, () => show(db.recent().length ? 'task' : 'command')) ?? false;
+  });
+  handle('sidekick:companion-move', value => {
+    const point = z.strictObject({ x: z.number().finite(), y: z.number().finite(), dragging: z.boolean().optional() }).parse(value);
+    companion?.move(point.x, point.y, point.dragging);
+  });
+  handle('sidekick:launcher-position', value => {
+    const x = z.number().finite().min(0).max(2000).parse(value);
+    if (!window || surface !== 'command') return;
+    const bounds = window.getBounds();
+    try { window.setShape([{ x: 0, y: 32, width: bounds.width, height: Math.max(1, bounds.height - 32) },
+      ...(db.settings().showCompanion ? [{ x: Math.round(Math.min(x, bounds.width - 32)), y: 0, width: 32, height: 32 }] : [])]); } catch { /* Transparent launchers are still compact on unsupported platforms. */ }
+  });
   handle('sidekick:show', value => show(surfaceSchema.parse(value)));
   handle('sidekick:cancel', value => engine.cancel(z.string().uuid().parse(value)));
   handle('sidekick:answer', value => {
@@ -215,16 +283,22 @@ async function start() {
   handle('sidekick:browser', async () => {
     await session.open();
     window?.hide();
+    companion?.launcher(false);
   });
   handle('sidekick:run', value => {
     if (accountBusy) throw new Error('Finish or cancel the ChatGPT account action first.');
     const command = commandSchema.parse(value);
     const running = engine.run(command);
-    show('task');
+    clearTimeout(collapseTimer);
+    if (db.settings().showCompanion) { window?.hide(); companion?.launcher(false); }
+    layout('task');
+    publish();
     return running;
   });
   handle('sidekick:settings', value => {
     const next = settingsSchema.parse(value);
+    const current = db.settings();
+    next.restingPosition = next.restingCorner === current.restingCorner ? current.restingPosition : null;
     if (accountBusy && next.connectionMode !== db.settings().connectionMode) throw new Error('Finish or cancel the ChatGPT account action first.');
     const previous = registered;
     const changed = next.shortcut !== db.settings().shortcut;
@@ -240,36 +314,92 @@ async function start() {
       shortcutWarning = '';
     }
     publish();
+    if (next.restingCorner !== current.restingCorner) companion?.chooseDisplay(false);
+    companion?.visibility();
     return next;
   });
 
   Menu.setApplicationMenu(null);
+  let mainRestarts: number[] = [];
+  const createMain = () => {
   window = new BrowserWindow({
-    width: dimensions.command[0], height: dimensions.command[1], show: false, title: 'Sidekick',
-    backgroundColor: '#201d1c', frame: false, resizable: false, maximizable: false, autoHideMenuBar: true,
+    width: dimensions.command[0], height: dimensions.command[1], show: false, title: 'Rove',
+    backgroundColor: '#00000000', transparent: true, frame: false, resizable: false, maximizable: false, autoHideMenuBar: true,
     webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, nodeIntegration: false },
   });
+  const created = window;
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
   window.webContents.on('will-attach-webview', event => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   window.on('close', event => {
-    if (!quitting && tray) { event.preventDefault(); window?.hide(); }
+    if (!quitting && tray) { event.preventDefault(); window?.hide(); companion?.launcher(false); }
+  });
+  window.on('hide', () => companion?.launcher(false));
+  window.on('minimize', () => companion?.launcher(false));
+  window.on('show', () => companion?.launcher(surface === 'command'));
+  recoverRenderer(created, 'launcher', logs, () => { publish(); if (created.isVisible()) created.webContents.send('sidekick:summon'); }, () => created.destroy());
+  created.once('closed', () => {
+    if (quitting) return;
+    lifecycleLog(logs, 'launcher-closed');
+    mainRestarts = mainRestarts.filter(at => Date.now() - at < 60_000);
+    if (mainRestarts.length >= 3) return;
+    mainRestarts.push(Date.now());
+    setTimeout(() => { if (!quitting) void createMain().loadFile(indexPath).catch(() => lifecycleLog(logs, 'launcher-recreate-failed')); }, 250);
   });
   window.once('ready-to-show', summon);
+  return created;
+  };
+  const initialMain = createMain();
+  restoreMain = () => {
+    if (window && !window.isDestroyed()) { show(runner?.active() ? 'task' : 'command', true); return; }
+    mainRestarts = [];
+    void createMain().loadFile(indexPath).catch(() => lifecycleLog(logs, 'launcher-recreate-failed'));
+  };
   const icon = nativeImage.createFromPath(join(__dirname, 'tray.png'));
   tray = new Tray(icon);
-  tray.setToolTip('Sidekick');
+  tray.setToolTip('Rove');
   tray.on('click', summon);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open Sidekick', click: summon },
+    { label: 'Open Rove', click: summon },
     { label: 'Open workspace', click: () => show('workspace', true) },
-    { label: 'Quit Sidekick', click: () => app.quit() },
+    { label: 'Bring companion back', click: () => {
+      db.save({ ...db.settings(), showCompanion: true, restingPosition: null });
+      companionRestarts = [];
+      if (!companion || companion.window.isDestroyed()) void createCompanion().catch(() => lifecycleLog(logs, 'companion-recreate-failed'));
+      else { companion.chooseDisplay(false); companion.launcher(false); }
+      publish();
+    } },
+    { label: 'Quit Rove', click: () => app.quit() },
   ]));
   const configured = db.settings().shortcut;
   try { register(configured); registered = configured; }
   catch (error) { shortcutWarning = explain(error); }
-  await window.loadFile(indexPath);
+  let companionRestarts: number[] = [];
+  const createCompanion = async () => {
+  companion = new DesktopCompanion(join(__dirname, 'preload.cjs'), () => db.settings(), position => {
+    db.save({ ...db.settings(), restingPosition: position });
+  }, publish, primaryButtonReader(helper('pointer.ps1')));
+  companion.onActivate(() => show(db.recent().length ? 'task' : 'command'));
+  companion.window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  companion.window.webContents.on('will-navigate', event => event.preventDefault());
+  companion.window.webContents.on('will-attach-webview', event => event.preventDefault());
+  const created = companion;
+  recoverRenderer(created.window, 'companion', logs, () => { publish(); created.visibility(); }, () => created.window.destroy());
+  created.window.once('closed', () => {
+    if (quitting) return;
+    lifecycleLog(logs, 'companion-closed');
+    companionRestarts = companionRestarts.filter(at => Date.now() - at < 60_000);
+    if (companionRestarts.length >= 3) { show('command'); return; }
+    companionRestarts.push(Date.now());
+    setTimeout(() => { if (!quitting) void createCompanion().catch(() => { lifecycleLog(logs, 'companion-recreate-failed'); show('command'); }); }, 250);
+  });
+  await companion.window.loadFile(indexPath, { hash: 'companion' });
+  companion.launcher(Boolean(window?.isVisible() && surface === 'command'));
+  publish();
+  };
+  await createCompanion();
+  await initialMain.loadFile(indexPath);
   if (chatgpt.status().sharing) void chatgpt.refreshModels();
 }
 
@@ -279,19 +409,22 @@ else {
   app.on('before-quit', event => {
     if (quitting) return;
     quitting = true;
+    clearTimeout(collapseTimer);
     cancelSignIn();
+    companion?.destroy();
     if (!browser) return;
     event.preventDefault();
     const active = runner?.active();
     if (active) runner?.cancel(active.id);
+    desktopWorker?.close();
     const timeout = setTimeout(() => app.quit(), 3000);
     void browser.close().catch(() => {}).finally(() => { clearTimeout(timeout); app.quit(); });
   });
   app.on('will-quit', () => { globalShortcut.unregisterAll(); store?.close(); });
-  app.on('window-all-closed', () => app.quit());
+  // Tray residency and window recovery must survive losing every renderer/window.
+  app.on('window-all-closed', () => { if (quitting) app.quit(); });
   void app.whenReady().then(start).catch(error => {
-    dialog.showErrorBox('Sidekick could not start', explain(error));
+    dialog.showErrorBox('Rove could not start', explain(error));
     app.quit();
   });
 }
-

@@ -118,21 +118,21 @@ test('cancellation preserves an in-flight dispatch and rejects another run', asy
   } finally { store.close(); }
 });
 
-test('local opening requires an answer for the active task and can be declined', async () => {
+test('opening executable content checks its effect once and can be declined', async () => {
   const store = new Store(':memory:');
   try {
     const calls: string[] = [];
-    const path = 'C:\\Sidekick\\notes.txt';
+    const path = 'C:\\Rove\\helper.cmd';
     const runner = new Runner(store, createRegistry({ ...noops, openPath: async value => { calls.push(value); } }), () => {});
     const declined = runner.run('open ' + path);
     const first = runner.active()!;
-    assert.equal(first.question?.kind === 'local' && first.question.path, path);
+    assert.equal(first.question?.kind, 'approval');
     runner.answer('old-run', true);
     assert.deepEqual(calls, []);
     runner.answer(first.id, false);
     await declined;
-    assert.equal(store.recent()[0].status, 'cancelled');
-    assert.equal(store.recent()[0].steps[0].status, 'skipped');
+    assert.equal(store.recent()[0].status, 'failed');
+    assert.equal(store.recent()[0].steps[0].status, 'failed');
     assert.deepEqual(calls, []);
     const approved = runner.run('open ' + path);
     runner.answer(runner.active()!.id, true);

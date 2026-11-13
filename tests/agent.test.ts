@@ -7,6 +7,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { BrowserSession } from '../src/browser.ts';
 import { openAIModel, testModel } from '../src/model.ts';
+import { defaults } from '../src/contracts.ts';
+import { runAgent } from '../src/agent.ts';
+import type { ToolCall } from '../src/model.ts';
 import { Runner } from '../src/runner.ts';
 import { Store } from '../src/store.ts';
 import { createRegistry } from '../src/tools.ts';
@@ -123,7 +126,7 @@ test('runner resumes a question, verifies a real browser batch, and stops a late
     const runner = new Runner(store, registry, () => {
       const active = runner.active();
       if (active?.question?.kind === 'text') next?.();
-      if (active?.question?.kind === 'approval') queueMicrotask(() => runner.answer(active.id, true));
+      assert.notEqual(active?.question?.kind, 'approval', 'ordinary form preparation must not ask permission');
     }, { configured: () => true, model: async () => openAIModel('fixture-key', 'test-model', endpoint.base), browser });
     const run = runner.run('Fill in the browser form and preview it.');
     await questionReached;
@@ -152,6 +155,53 @@ test('runner resumes a question, verifies a real browser batch, and stops a late
   }
 });
 
-
-
-
+test('browser form stops at review even when the model attempts a final batch', { skip: !edgeInstalled }, async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'sidekick-review-'));
+  const browser = new BrowserSession(folder, { channel: 'msedge', headless: true });
+  const store = new Store(':memory:');
+  let submitted = false;
+  const page = await fixture((request, response) => {
+    if (request.url === '/submit') submitted = true;
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<h1>Registration</h1><form method="post" action="/submit"><label>Name <input name="name"></label><button type="button" onclick="document.querySelector(\'h1\').textContent=\'Review your request\'">Review</button><button>Submit</button></form>');
+  });
+  let turn = 0;
+  const id = store.start('Fill my form and stop at review', 'running', '');
+  try {
+    const result = await runAgent({
+      id, command: 'Fill my form and stop at review', settings: defaults,
+      store, browser, registry: createRegistry({ openUrl: async () => { assert.fail('boundary bypass'); }, openPath: async () => {}, launchTerminal: async () => {} }),
+      signal: new AbortController().signal, phase: () => {}, publish: () => {},
+      ask: async () => { assert.fail('unexpected approval'); },
+      model: {
+        async decide(_instructions, context, _tools, previous) {
+          const script = [
+            { name: 'navigate', args: { url: page.base } },
+            { name: 'fill', args: { origin: page.base, target: { by: 'label', name: 'Name' }, value: 'Ada' } },
+            { name: 'click', args: { origin: page.base, target: { by: 'role', role: 'button', name: 'Review' }, expect: { origin: page.base, visible: { by: 'role', role: 'heading', name: 'Review your request' } } } },
+            { name: 'batch', args: { actions: [
+              { action: 'click', origin: page.base, target: { by: 'role', role: 'button', name: 'Submit' }, expect: { origin: page.base, visible: { by: 'text', name: 'Done' } } },
+              { action: 'openUrl', url: page.base + '/submit' },
+            ] } },
+            { name: 'finish', args: { status: 'completed', message: 'The form is ready at review. No submission was made.' } },
+          ];
+          if (turn === 4) {
+            assert.match(JSON.stringify(previous?.outputs), /review boundary/);
+            assert.match(context, /"boundaryReached":true/);
+          }
+          const item = script[turn++];
+          const call: ToolCall = { type: 'function_call', name: item.name, arguments: JSON.stringify(item.args), call_id: 'review-' + turn };
+          return { calls: [call], items: [call] };
+        },
+      },
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(submitted, false);
+    assert.equal(store.recent()[0].steps.length, 3);
+  } finally {
+    await browser.close();
+    await page.close();
+    store.close();
+    rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+  }
+});

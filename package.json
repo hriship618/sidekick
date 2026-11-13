@@ -1,7 +1,9 @@
 {
-  "name": "sidekick-desktop",
-  "productName": "Sidekick",
-  "version": "0.1.0",
+  "name": "rove-desktop",
+  "productName": "Rove",
+  "version": "0.2.0",
+  "description": "A quiet Windows desktop companion that gets things done.",
+  "author": "Rove contributors",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -13,11 +15,27 @@
   "scripts": {
     "dev": "node scripts/build.mjs && electron .",
     "build": "node scripts/build.mjs",
+    "dist:win": "node scripts/make-icon.mjs && pnpm build && electron-builder --win nsis --x64 --publish never",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.ts",
+    "test:overlay": "pnpm build && node scripts/check-overlay.mjs",
+    "test:drag": "pnpm build && node scripts/check-native-drag.mjs",
     "check": "pnpm typecheck && pnpm test && pnpm build"
   },
+  "build": {
+    "appId": "io.rove.desktop",
+    "productName": "Rove",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "package.json"],
+    "extraResources": [{ "from": "dist/windows-desktop.ps1", "to": "windows-desktop.ps1" }, { "from": "dist/pointer.ps1", "to": "pointer.ps1" }],
+    "asar": true,
+    "asarUnpack": ["node_modules/koffi/**/*", "node_modules/@koromix/**/*"],
+    "npmRebuild": false,
+    "win": { "target": "nsis", "icon": "resources/rove.ico", "artifactName": "Rove-Setup-${version}.${ext}" },
+    "nsis": { "oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "Rove", "deleteAppDataOnUninstall": false, "runAfterFinish": true }
+  },
   "dependencies": {
+    "koffi": "3.3.7",
     "oauth4webapi": "^3.8.8",
     "openai": "^7.54.0",
     "playwright": "^1.65.0",
@@ -30,6 +48,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "electron": "45.2.3",
+    "electron-builder": "26.18.0",
     "esbuild": "^0.28",
     "typescript": "^6"
   }

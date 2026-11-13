@@ -5,6 +5,7 @@ import type { Action } from './tools.ts';
 
 export class Store {
   private db: DatabaseSync;
+  private recentCache?: Run[];
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec(`
@@ -37,7 +38,7 @@ export class Store {
           WHERE status = 'running' AND run_id IN (SELECT id FROM runs WHERE status = 'running');
         UPDATE steps SET status = 'skipped'
           WHERE status = 'queued' AND run_id IN (SELECT id FROM runs WHERE status = 'running');
-        UPDATE runs SET status = 'interrupted', message = 'Sidekick closed during execution. Check what opened before running again.'
+        UPDATE runs SET status = 'interrupted', message = 'Rove closed during execution. Check what opened before running again.'
           WHERE status = 'running';
       `);
     });
@@ -64,6 +65,8 @@ export class Store {
       shortcut: previous.shortcut, showCompanion: previous.showCompanion,
       animateCompanion: previous.animateCompanion, model: previous.model,
       connectionMode: previous.connectionMode, chatgptModel: previous.chatgptModel,
+      desktopAccess: previous.desktopAccess,
+      quietMode: previous.quietMode, restingCorner: previous.restingCorner, restingPosition: previous.restingPosition, routines: previous.routines,
     });
   }
 
@@ -73,6 +76,7 @@ export class Store {
   }
 
   start(command: string, status: Run['status'], message: string, actions: Action[] = [], description?: string, routine?: string) {
+    this.recentCache = undefined;
     const id = randomUUID();
     this.transaction(() => {
       this.db.prepare('INSERT INTO runs VALUES (?, ?, ?, ?, ?)').run(id, command, new Date().toISOString(), status, message);
@@ -98,6 +102,11 @@ export class Store {
 
   saveAuthProfile(id: string, encrypted: Buffer) {
     this.db.prepare('INSERT INTO chatgpt_profiles VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET encrypted = excluded.encrypted').run(id, encrypted);
+  }
+
+  useRoutine(id: string, routine: string) {
+    this.recentCache = undefined;
+    this.db.prepare('UPDATE run_metadata SET routine = ? WHERE run_id = ?').run(routine, id);
   }
 
   hasCredential() {
@@ -135,6 +144,7 @@ export class Store {
   }
 
   addStep(id: string, label: string, tool: string) {
+    this.recentCache = undefined;
     const row = this.db.prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM steps WHERE run_id = ?').get(id);
     const index = Number(row?.next);
     this.db.prepare("INSERT INTO steps VALUES (?, ?, ?, ?, 'running', NULL, NULL)").run(id, index, label, tool);
@@ -142,11 +152,13 @@ export class Store {
   }
 
   updateStep(id: string, index: number, status: Step['status'], result?: ToolResult, error?: string) {
+    this.recentCache = undefined;
     this.db.prepare('UPDATE steps SET status = ?, result = ?, error = ? WHERE run_id = ? AND position = ?')
       .run(status, result ? JSON.stringify(result) : null, error ?? null, id, index);
   }
 
   finish(id: string, status: Run['status'], message: string) {
+    this.recentCache = undefined;
     this.transaction(() => {
       if (status === 'cancelled') {
         this.db.prepare("UPDATE steps SET status = 'skipped' WHERE run_id = ? AND status = 'queued'").run(id);
@@ -157,8 +169,9 @@ export class Store {
   }
 
   recent(): Run[] {
+    if (this.recentCache) return this.recentCache;
     const readSteps = this.db.prepare('SELECT label, tool, status, result, error FROM steps WHERE run_id = ? ORDER BY position');
-    return this.db.prepare('SELECT runs.*, description, routine, finished_at FROM runs LEFT JOIN run_metadata ON run_id = runs.id ORDER BY runs.rowid DESC LIMIT 20').all().map(row => ({
+    return this.recentCache = this.db.prepare('SELECT runs.*, description, routine, finished_at FROM runs LEFT JOIN run_metadata ON run_id = runs.id ORDER BY runs.rowid DESC LIMIT 20').all().map(row => ({
       id: String(row.id), command: String(row.command), createdAt: String(row.created_at),
       description: row.description ? String(row.description) : undefined,
       routine: row.routine ? String(row.routine) : undefined,

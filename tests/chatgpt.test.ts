@@ -28,7 +28,7 @@ test('ChatGPT registration verifies the callback and signed identity, renews the
       const url = new URL(target);
       assert.equal(url.origin, issuer);
       assert.equal(url.searchParams.get('client_id'), authCount ? client : 'dynamic_agent_client');
-      assert.equal(url.searchParams.get('agent_name_hint'), authCount ? null : 'Sidekick');
+      assert.equal(url.searchParams.get('agent_name_hint'), authCount ? null : 'Rove');
       assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
       assert.match(url.searchParams.get('scope')!, /chatgpt.tokens.use.direct/);
       const host = url.searchParams.get('ext_agent_host_id')!;

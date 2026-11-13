@@ -16,7 +16,7 @@ export async function readKey(store: Store) {
 
 export async function requestKey(store: Store) {
   if (process.platform !== 'win32' || !await safeStorage.isAsyncEncryptionAvailable()) {
-    throw new Error('OS-backed credential storage is unavailable. Sidekick cannot save an API key on this system.');
+    throw new Error('OS-backed credential storage is unavailable. Rove cannot save an API key on this system.');
   }
   const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const script = await readFile(join(__dirname, 'credential.ps1'), 'utf8');

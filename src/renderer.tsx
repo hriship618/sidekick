@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { ActiveRun, Run, Settings, SidekickApi, Snapshot, Surface } from './contracts.ts';
+import type { ActiveRun, Run, Settings, RoveApi, Snapshot, Surface } from './contracts.ts';
 import { Companion, type Mood } from './companion.tsx';
 import { errorText, SettingsPanel } from './settings.tsx';
 import './style.css';
+import { CompanionOverlay } from './companion-overlay.tsx';
+import { LauncherCompanion } from './launcher-companion.tsx';
 
-declare global { interface Window { sidekick: SidekickApi } }
+declare global { interface Window { sidekick: RoveApi } }
 const api = window.sidekick;
 const statusLabels = { running: 'In progress', waiting: 'Setup needed', completed: 'Completed', failed: 'Needs attention', interrupted: 'Interrupted', cancelled: 'Cancelled' };
 const taskTitles: Record<string, string> = { openLocal: 'Open a file or folder', openUrl: 'Open a link' };
@@ -32,18 +34,20 @@ function Icon({ name }: { name: IconName }) {
 
 function Titlebar({ surface, navigate, settings, hide }: { surface: Surface; navigate: (surface: Surface) => void; settings: () => void; hide: () => void }) {
   return <header className="titlebar">
-    <div className="brand"><span className="brand-mark"><Icon name="bolt"/></span>Sidekick</div>
+    <div className="brand"><span className="brand-mark"><Icon name="bolt"/></span>Rove</div>
     <div className="title-actions">
       {surface !== 'workspace' && <button className="quiet workspace-button" onClick={() => navigate('workspace')}><Icon name="grid"/> Workspace</button>}
       {surface !== 'workspace' && <button className="quiet workspace-button" onClick={settings}><Icon name="settings"/> Settings</button>}
-      <button className="quiet icon-button" onClick={hide} title="Hide Sidekick (Esc)" aria-label="Hide Sidekick"><Icon name="close"/></button>
+      <button className="quiet icon-button" onClick={hide} title="Hide Rove (Esc)" aria-label="Hide Rove"><Icon name="close"/></button>
     </div>
   </header>;
 }
 
-function CommandBar({ snapshot, command, change, run, input, busy, task }: {
+function CommandBar({ snapshot, command, change, run, input, busy, task, settings, workspace, error }: {
   snapshot: Snapshot; command: string; change: (value: string) => void; run: (value: string) => void;
   input: React.RefObject<HTMLInputElement | null>; busy: boolean; task: () => void;
+  settings: () => void; workspace: () => void;
+  error: string;
 }) {
   const active = Boolean(snapshot.active);
   useEffect(() => { input.current?.focus(); }, [input]);
@@ -54,22 +58,23 @@ function CommandBar({ snapshot, command, change, run, input, busy, task }: {
   }
 
   return <main className="command-surface arrive">
+    {snapshot.settings.showCompanion && <LauncherCompanion command={command} settings={snapshot.settings}/>}
     <form className="command-field" onSubmit={submit}>
       <span className="prompt"><Icon name="terminal"/></span>
-      <input ref={input} aria-label="Command" placeholder="What would you like to do?" maxLength={4096}
+      <input ref={input} aria-label="Command" placeholder="Ask Rove…" maxLength={4096}
         value={command} onChange={event => change(event.target.value)}/>
-      <button className="primary run-button" disabled={busy || active || !command.trim()}>Run <span aria-hidden="true">↵</span></button>
+      <button type="button" className="quiet icon-button" onClick={workspace} aria-label="Open workspace" title="Routines and recent tasks"><Icon name="grid"/></button>
+      <button type="button" className="quiet icon-button" onClick={settings} aria-label="Open settings" title="Settings"><Icon name="settings"/></button>
+      <button className="primary run-button" aria-label="Run command" title="Run (Enter)" disabled={busy || active || !command.trim()}><Icon name="arrow"/></button>
     </form>
-    {active ? <div className="command-empty"><span>A task is already in progress.</span><button className="secondary" onClick={task}>View task</button></div>
-      : <p className="command-empty muted">{snapshot.settings.connectionMode === 'chatgpt'
-        ? snapshot.chatgpt.sharing ? 'Using ChatGPT plan.' : 'Open Settings and continue with ChatGPT.'
-        : snapshot.credentialSaved ? 'Using your OpenAI API key.' : 'Open Settings to connect your API key.'}</p>}
     <footer className="command-footer">
-      <span><kbd>↵</kbd> Run <kbd>Esc</kbd> Hide</span>
-      {snapshot.runs.length > 0 && !active && <button className="quiet last-task" onClick={task}>Last task</button>}
-      {snapshot.settings.showCompanion && <Companion mood="idle" animated={snapshot.settings.animateCompanion}/>}
+      {error ? <span className="launcher-error" title={error} role="alert">{error}</span> : <button className="quiet provider-label" onClick={settings} title={snapshot.shortcutWarning || 'Connection settings'}>
+        <span className={`connection-dot ${(snapshot.settings.connectionMode === 'chatgpt' ? snapshot.chatgpt.sharing : snapshot.credentialSaved) ? 'connected' : ''}`}/>
+        {snapshot.shortcutWarning ? 'Shortcut unavailable' : snapshot.settings.connectionMode === 'chatgpt' ? snapshot.chatgpt.sharing ? 'ChatGPT' : 'Connect ChatGPT' : snapshot.credentialSaved ? 'OpenAI' : 'Connect OpenAI'}
+      </button>}
+      {(active || snapshot.runs.length > 0) && <button className="quiet last-task" onClick={task}>{active ? 'View running task' : 'Last task'}</button>}
+      <span className="key-hints"><kbd>↵</kbd> run <kbd>Esc</kbd> hide</span>
     </footer>
-    {snapshot.shortcutWarning && <p className="notice" role="alert">{snapshot.shortcutWarning}</p>}
   </main>;
 }
 
@@ -147,7 +152,7 @@ function TaskCard({ run, active, settings, edit, next, setup, perform }: {
         <h2 ref={question} tabIndex={-1}>{prompt.kind === 'local' ? 'Open this file or folder?' : prompt.text}</h2>
         {prompt.kind === 'local' && <><p className="path">{prompt.path}</p><p>Windows will use its default app for this item.</p></>}
         {prompt.kind === 'approval' && <p className="path approval-detail">{prompt.detail}</p>}
-        {prompt.kind === 'login' && <p>Complete this step in the Sidekick browser, then summon Sidekick again to continue.</p>}
+        {prompt.kind === 'login' && <p>Complete this step in the Rove browser, then summon Rove again to continue.</p>}
         {prompt.kind === 'text' && <form className="reply" id="agent-reply" onSubmit={sendReply}>
           <input ref={replyInput} aria-label="Your answer" maxLength={600} placeholder="Type your answer…" value={reply} onChange={event => setReply(event.target.value)}/>
         </form>}
@@ -193,7 +198,7 @@ function Workspace({ snapshot, tab, select, command, task }: {
       <nav aria-label="Workspace sections">{tabs.map(item => <button key={item.name} aria-current={tab === item.name ? 'page' : undefined} onClick={() => select(item.name)}>
         <Icon name={item.icon}/><span>{item.name}</span>
       </button>)}</nav>
-      <span className="sidebar-footer"><kbd>{snapshot.settings.shortcut}</kbd><span>Open Sidekick</span></span>
+      <span className="sidebar-footer"><kbd>{snapshot.settings.shortcut}</kbd><span>Open Rove</span></span>
     </aside>
     <main className="workspace-content">
       <div className="workspace-heading">
@@ -228,6 +233,11 @@ function App() {
 
   useEffect(() => {
     let alive = true;
+    const beat = () => {
+      const ready = location.hash === '#companion' ? document.querySelector('[data-creature]') : document.querySelector('.command-field,.task-surface,.workspace');
+      if (ready) void api.heartbeat().catch(() => {});
+    };
+    const healthTimer = setInterval(beat, 1500);
     let updated = false;
     const unsubscribe = api.onUpdate(next => { updated = true; setSnapshot(next); });
     const unsubscribeSummon = api.onSummon(() => requestAnimationFrame(() => input.current?.focus()));
@@ -237,7 +247,7 @@ function App() {
       if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing) void api.hide();
     };
     window.addEventListener('keydown', escape);
-    return () => { alive = false; unsubscribe(); unsubscribeSummon(); window.removeEventListener('keydown', escape); };
+    return () => { alive = false; clearInterval(healthTimer); unsubscribe(); unsubscribeSummon(); window.removeEventListener('keydown', escape); };
   }, []);
 
   async function run(value: string) {
@@ -250,13 +260,15 @@ function App() {
   }
 
   const surface = snapshot?.surface ?? 'command';
+  useEffect(() => { document.documentElement.dataset.surface = surface; }, [surface]);
   const latest = snapshot?.runs[0];
   const newCommand = () => { setCommand(''); navigate('command'); };
   const viewTask = () => navigate('task');
   const openSettings = () => { setTab('Settings'); navigate('workspace'); };
-  return <div className={`app ${surface}`}>
-    <Titlebar surface={surface} navigate={navigate} settings={openSettings} hide={hide}/>
-    {error && <p className="notice app-error" role="alert">{error}</p>}
+  if (location.hash === '#companion') return snapshot ? <CompanionOverlay snapshot={snapshot}/> : null;
+  return <div className={`app ${surface} ${snapshot?.settings.showCompanion === false ? 'no-companion' : ''}`}>
+    {surface !== 'command' && <Titlebar surface={surface} navigate={navigate} settings={openSettings} hide={hide}/>}
+    {error && surface !== 'command' && <p className="notice app-error" role="alert">{error}</p>}
     {snapshot && (surface === 'workspace'
       ? <Workspace snapshot={snapshot} tab={tab} select={setTab} command={newCommand} task={viewTask}/>
       : surface === 'task' && latest
@@ -264,11 +276,9 @@ function App() {
           edit={() => { setCommand(latest.command); navigate('command'); }}
           setup={openSettings} perform={perform}/>
         : <CommandBar snapshot={snapshot} command={command} change={setCommand} run={value => void run(value)}
-          input={input} busy={busy} task={viewTask}/>)}
+          input={input} busy={busy} task={viewTask} settings={openSettings} workspace={() => navigate('workspace')} error={error}/>)}
   </div>;
 }
 
+if (location.hash === '#companion') document.documentElement.dataset.overlay = 'true';
 createRoot(document.getElementById('root')!).render(<App/>);
-
-
-

@@ -31,7 +31,7 @@ function chatGPTError(error: unknown): string {
   if (code === 'subscription_sharing_usage_limit_exceeded' || status === 429) {
     return 'ChatGPT plan usage limit reached. Open Settings → Manage usage to review your limit.';
   }
-  if (code === 'subscription_sharing_user_not_eligible') return 'This ChatGPT account or workspace is ineligible for plan usage in Sidekick.';
+  if (code === 'subscription_sharing_user_not_eligible') return 'This ChatGPT account or workspace is ineligible for plan usage in Rove.';
   if (status === 401 || code === 'subscription_sharing_invalid_user') return 'The ChatGPT connection was rejected. Continue with ChatGPT again in Settings.';
   if (status === 400 || code === 'subscription_sharing_unsupported_capability') return 'ChatGPT plan access rejected this request. Choose another available model in Settings.';
   if (status === 403 || status === 404) return 'ChatGPT denied plan access for this request. Check the account and model in Settings.';
@@ -55,7 +55,7 @@ function modelAdapter(getKey: (signal: AbortSignal) => Promise<string>, model: s
       const functions = tools.map(tool => ({ ...tool, type: 'function' as const, strict: false }));
       const request: ResponseCreateParamsBase = {
         model, instructions, input, store: false, include: ['reasoning.encrypted_content'],
-        tools: plan ? [{ type: 'namespace', name: 'sidekick', description: 'Sidekick desktop task tools.', tools: functions }] : functions,
+        tools: plan ? [{ type: 'namespace', name: 'sidekick', description: 'Rove desktop task tools.', tools: functions }] : functions,
         tool_choice: 'required', parallel_tool_calls: false,
       };
       let response: Response | undefined;
@@ -79,7 +79,7 @@ function modelAdapter(getKey: (signal: AbortSignal) => Promise<string>, model: s
         : 'OpenAI did not return a completed response.');
       const calls = response.output.filter(item => item.type === 'function_call');
       if (!calls.length || (plan && calls.some(call => call.namespace && call.namespace !== 'sidekick'))) {
-        throw new Error('The selected model did not return a usable Sidekick action. Try another model.');
+        throw new Error('The selected model did not return a usable Rove action. Try another model.');
       }
       return { items: response.output.filter(item => item.type === 'reasoning' || item.type === 'function_call'), calls };
     },
@@ -95,7 +95,7 @@ export function chatGPTModel(getToken: (signal: AbortSignal) => Promise<string>,
 }
 
 export async function testModel(model: AgentModel) {
-  const turn = await model.decide('Call connection_check once.', 'Test the Sidekick connection.', [{
+  const turn = await model.decide('Call connection_check once.', 'Test the Rove connection.', [{
     name: 'connection_check', description: 'Confirm that tool calling works.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   }], undefined, new AbortController().signal);

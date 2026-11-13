@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { SidekickApi, Snapshot } from './contracts.ts';
+import type { RoveApi, Snapshot } from './contracts.ts';
 
-const api: SidekickApi = {
+const api: RoveApi = {
+  heartbeat: () => ipcRenderer.invoke('sidekick:heartbeat'),
+  companionLayout: regions => ipcRenderer.invoke('sidekick:companion-layout', regions),
+  companionHit: interactive => ipcRenderer.invoke('sidekick:companion-hit', interactive),
+  moveCompanion: position => ipcRenderer.invoke('sidekick:companion-move', position),
+  grabCompanion: pointer => ipcRenderer.invoke('sidekick:companion-grab', pointer),
+  launcherPosition: x => ipcRenderer.invoke('sidekick:launcher-position', x),
   snapshot: () => ipcRenderer.invoke('sidekick:snapshot'),
   saveSettings: settings => ipcRenderer.invoke('sidekick:settings', settings),
   run: command => ipcRenderer.invoke('sidekick:run', command),
@@ -24,4 +30,3 @@ const api: SidekickApi = {
   },
 };
 contextBridge.exposeInMainWorld('sidekick', api);
-

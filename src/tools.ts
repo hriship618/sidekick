@@ -1,15 +1,13 @@
 import { z } from 'zod';
-import { win32 } from 'node:path';
-import { webUrl, sshAlias, remoteDir, type ToolResult } from './contracts.ts';
-
-export const localPath = z.string().trim().max(2048)
-  .refine(value => /^[a-z]:\\[^:<>"|?*\x00-\x1f]*$/i.test(value) && win32.isAbsolute(value),
-    'Enter a local drive path such as C:\\Users\\you\\Documents.');
+import { webUrl, localPath, sshAlias, remoteDir, type ToolResult } from './contracts.ts';
+import { desktopInput, desktopOutput, type DesktopInput, type DesktopResult } from './windows-desktop.ts';
+export { localPath } from './contracts.ts';
 
 export interface PlatformTools {
   openUrl(url: string): Promise<void>;
   openPath(path: string): Promise<void>;
   launchTerminal(sshArgs: string[]): Promise<void>;
+  desktop?(input: DesktopInput, signal?: AbortSignal): Promise<DesktopResult>;
 }
 
 export function sshArguments(input: { alias: string; directory: string }) {
@@ -29,7 +27,7 @@ function tool<S extends z.ZodType>(
 ) {
   return {
     input, output, verification, retryMayDuplicate: true,
-    async run(value: unknown): Promise<ToolResult> {
+    async run(value: unknown, _signal?: AbortSignal): Promise<ToolResult> {
       return output.parse({ verification, message: await execute(input.parse(value)) });
     },
   };
@@ -37,6 +35,13 @@ function tool<S extends z.ZodType>(
 
 export function createRegistry(platform: PlatformTools) {
   return {
+    desktop: {
+      input: desktopInput, output: desktopOutput, verification: 'desktop-observed' as const, retryMayDuplicate: true,
+      async run(value: unknown, signal?: AbortSignal): Promise<DesktopResult> {
+        if (!platform.desktop) throw new Error('The Windows desktop adapter is unavailable in this environment.');
+        return desktopOutput.parse(await platform.desktop(desktopInput.parse(value), signal));
+      },
+    },
     openUrl: tool(z.strictObject({ url: webUrl }), 'dispatch-only', async ({ url }) => {
       await platform.openUrl(url);
       return 'Sent to the default browser. Page load is unverified.';
@@ -56,6 +61,3 @@ type Registry = ReturnType<typeof createRegistry>;
 export type Action = {
   [K in keyof Registry]: { tool: K; label: string; input: z.input<Registry[K]['input']> }
 }[keyof Registry];
-
-
-

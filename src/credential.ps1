@@ -3,7 +3,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $form = [Windows.Forms.Form]::new()
-$form.Text = 'Sidekick - OpenAI API key'
+$form.Text = 'Rove - OpenAI API key'
 $form.ClientSize = [Drawing.Size]::new(470, 133)
 $form.FormBorderStyle = 'FixedDialog'
 $form.StartPosition = 'CenterScreen'
