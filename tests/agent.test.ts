@@ -97,11 +97,12 @@ test('runner resumes a question, verifies a real browser batch, and stops a late
       () => call(response, 'ask_user', { question: 'What name should I enter?', manualLogin: false }, index),
       () => {
         assert.match(last.output, /Ada/);
-        call(response, 'batch', { actions: [
+        const actions = [
           { action: 'navigate', url: page.base, expect: { origin: page.base, visible: visible('Lab form') } },
           { action: 'fill', origin: page.base, target: { by: 'label', name: 'Name' }, value: 'Ada', expect: { origin: page.base } },
           { action: 'click', origin: page.base, target: { by: 'role', role: 'button', name: 'Preview' }, expect: { origin: page.base, visible: visible('Saved') } },
-        ] }, index);
+        ];
+        call(response, 'execute_graph', { nodes: actions.map((action, i) => ({ id: `step${i + 1}`, after: i ? [`step${i}`] : [], action })) }, index);
       },
       () => {
         assert.match(last.output, /Field value verified/);

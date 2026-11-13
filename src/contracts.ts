@@ -59,6 +59,7 @@ export type Run = {
   id: string; command: string; createdAt: string;
   status: 'running' | 'waiting' | 'completed' | 'failed' | 'interrupted' | 'cancelled';
   message: string; steps: Step[]; description?: string; routine?: string; finishedAt?: string;
+  engine?: { modelCalls: number; graphPlans: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; usageReported: boolean; reducedChars: number };
 };
 export const surfaceSchema = z.enum(['command', 'task', 'workspace']);
 export type Surface = z.infer<typeof surfaceSchema>;

@@ -39,6 +39,10 @@ try{
   console.log('local command finished',elapsedMs);
  assert.equal(closed.runs[0].status,'completed',closed.runs[0].message);
  assert.equal(closed.runs[0].steps.length,2);
+ assert.equal(closed.runs[0].engine.modelCalls,0);
+ await panel.evaluate(()=>window.sidekick.show('task'));
+ await panel.getByText('Execution details',{exact:true}).click();
+ assert.match(await panel.getByLabel('Execution engine metrics').innerText(),/Executed locally.*0 model calls/);
  assert.equal(await app.evaluate(()=>globalThis.testFixture.isDestroyed()),true);
  await panel.evaluate(()=>window.sidekick.show('command'));
   console.log('launcher shown');

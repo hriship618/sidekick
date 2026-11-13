@@ -14,7 +14,7 @@ The execution engine remains the authority for permissions, cancellation, verifi
 - Desktop helper reuse avoids a PowerShell process and compilation for each step. Native mouse observation is optional; a blocked native addon cannot prevent startup.
 - Local execution traces include elapsed time and zero-model-call evidence. Task history is cached between actual changes rather than reread during every companion animation.
 
-These are hand-authored execution paths, not learned graphs. No autonomous learning or inferred performance savings is being claimed yet.
+The shared dependency interpreter now runs saved routines, batches and explicit model-generated graphs in the app. It validates prerequisites, stops on failure, and persists checkpoints. Provider usage and context reduction are recorded and shown in execution details. These are hand-authored or per-request execution plans, not learned workflows. No autonomous learning or inferred performance savings is being claimed yet. Research attribution and implementation boundaries are in [RESEARCH.md](RESEARCH.md).
 
 ## End-to-end path
 
@@ -126,4 +126,4 @@ Create a benchmark set spanning app/window ambiguity, files, URLs, browser readi
 
 ## First next implementation
 
-Build Stage 1 and the minimal Stage 2 interpreter. Port `close_application` and existing manually configured launch routines onto it. Capture a candidate from an actual successful read-only browser task, review it, and show a second execution taking the guarded graph path with fewer model calls. That is the smallest convincing demonstration of learning; a static diagram or a cache of final answers is not.
+The minimal dependency interpreter, launch-routine integration, model graph tool and provider-usage instrumentation now exist. Next, add immutable persisted workflow versions, typed slot bindings and guard definitions, plus a candidate-review surface. Capture a candidate from an actual successful read-only browser task, review it, and show a second execution taking the guarded stored-workflow path with fewer model calls. That remains the smallest convincing demonstration of learning; per-request graph execution alone is not learning.

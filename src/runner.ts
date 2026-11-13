@@ -6,6 +6,7 @@ import { localPath, type createRegistry } from './tools.ts';
 import { z } from 'zod';
 import { runAgent, type AgentServices } from './agent.ts';
 import { ExecutionPolicy } from './execution-policy.ts';
+import { executeGraph, linearGraph } from './execution-graph.ts';
 
 export function explain(error: unknown) {
   if (error instanceof z.ZodError) {
@@ -185,6 +186,11 @@ export class Runner {
       this.publish();
       return;
     }
+    if (plan.actions.length > 32) {
+      this.store.start(command, 'failed', 'This plan is too large. Split it into requests with at most 32 steps.');
+      this.publish();
+      return;
+    }
     const id = this.store.start(command, 'running', 'Sending actions to Windows…', plan.actions, plan.description, plan.routine);
     if (route) this.store.trace(id, 'local-route', { ...route, modelCalls: 0 });
     const execution: Execution = { id, cancelling: false, controller: new AbortController() };
@@ -192,8 +198,11 @@ export class Runner {
     const policy = new ExecutionPolicy(command, question => this.ask(execution, question));
     let failures = 0;
     try {
-      for (const [index, action] of plan.actions.entries()) {
-        if (execution.cancelling) break;
+      const nodes = linearGraph(plan.actions.map((action, index) => ({ action, index })));
+      this.store.trace(id, 'graph-plan', { nodes: nodes.map(node => ({ id: node.id, after: node.after, action: node.action.action.tool })), modelCalls: 0 });
+      const receipt = await executeGraph(nodes, { signal: execution.controller.signal,
+        execute: async node => {
+        const { action, index } = node.action;
         execution.phase = action.label;
         this.store.updateStep(id, index, 'running');
         this.publish();
@@ -202,17 +211,24 @@ export class Runner {
           execution.controller.signal.throwIfAborted();
           const result = await this.registry[action.tool].run(action.input, execution.controller.signal);
           this.store.updateStep(id, index, 'completed', result);
+          return { ok: true, message: result.message };
         } catch (error) {
-          if (execution.cancelling) { this.store.updateStep(id, index, 'skipped'); break; }
+          if (execution.cancelling) { this.store.updateStep(id, index, 'skipped'); return { ok: false, message: 'Cancelled. A dispatched action may have finished.' }; }
           failures++;
           this.store.updateStep(id, index, 'failed', undefined, explain(error));
+          return { ok: false, message: explain(error) };
         }
+        }, event: event => this.store.trace(id, 'graph-checkpoint', event) });
+      for (const nodeId of receipt.blocked) {
+        const node = nodes.find(item => item.id === nodeId)!;
+        this.store.updateStep(id, node.action.index, 'skipped');
       }
+      this.store.trace(id, 'graph-receipt', { completed: receipt.completed, blocked: receipt.blocked, failedNode: receipt.failedNode, modelCalls: 0 });
       if (execution.cancelling) {
         this.store.finish(id, 'cancelled', 'Rove stopped the task. Anything already opened may still be open.');
       } else {
         this.store.finish(id, failures ? 'failed' : 'completed', failures
-          ? `${failures} of ${plan.actions.length} actions couldn’t finish.`
+          ? 'Stopped after a step failed. Remaining steps were not started.'
           : route?.node === 'Volume-Up' ? 'Playback volume increased and its setting verified.' : 'All launch requests sent.');
       }
     } finally {

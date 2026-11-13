@@ -1,31 +1,42 @@
 # Rove
 
-**A little Windows companion that gets things done.**
+**An open-source Windows assistant built around research in efficient AI agents.**
 
-Press **Ctrl+Alt+Space**, type what you need, and Rove gets to work. It stays quietly by your taskbar while you use your computer. Hover or click the creature to check progress, answer a question, or stop a task.
+Describe the outcome you want. Rove works across browser pages, local files, Windows apps, and SSH workspaces, shows real progress, and asks when it needs a detail. Press **Ctrl+Alt+Space** to summon it; the companion stays quietly by your taskbar while it works.
 
-## What can it do?
+## The idea: stop making AI rethink every step
 
-- Open websites, files, and folders.
-- Close apps and adjust your volume.
-- Browse pages, click buttons, and fill in forms in its own browser.
-- Launch SSH workspaces and run saved routines.
-- Ask a quick question when it needs more information, then continue.
+A useful assistant should get things done with fewer model calls and less repeated context. Rove separates **planning, execution, and evidence**:
 
-Try **“close Notepad”**, **“volume up by 5”**, or **“open https://example.com”**.
+1. **Route locally when possible.** Saved routines and supported commands run without a cloud model.
+2. **Execute a graph of steps.** For unfamiliar work, the model can supply a plan with explicit dependencies. The local engine orders the steps, runs checks, and stops when a step fails.
+3. **Keep the model's context small.** Long results stay on your PC. The model gets compact observations and can retrieve missing details.
+4. **Reuse a stable prompt prefix.** Instructions and tool definitions stay unchanged during a task, making provider prefix-cache reuse possible.
 
-## Why Rove?
+These paths are wired into the launcher and execution engine. Expand **Execution details** to see model calls, graph usage, reported token/cache counts, and context reduction when available.
 
-- **Quick for everyday tasks.** Supported simple commands run directly on your PC, without waiting for AI. Warm app closes took about **138 ms** in our local benchmark.
-- **Less back-and-forth with AI.** For harder tasks, Rove sends compact results and keeps long logs locally, ready to retrieve when needed.
-- **Easy to stay out of your way.** A small launcher, a quiet companion, and details only when you want them.
-- **Open source.** Your routines, settings, and task history are stored on your computer.
+## Research in practice
 
-**Next:** learning reusable routines from successful tasks, so repeated work needs less AI. Automatic learning is still planned—not shipped yet.
+| Research | What Rove implements |
+| --- | --- |
+| [Graph-based agent planning — Wu et al., NeurIPS 2024](https://arxiv.org/abs/2405.19119) | An executable dependency graph for model plans, batches, and saved routines. Invalid graphs execute nothing; failed steps block further work. Rove uses deterministic routing, not the paper's GNN. |
+| [Trajectory reduction / AgentDiet — Xiao et al., 2025; revised 2026](https://arxiv.org/abs/2509.23586) | Bounded observations, a compact recent history, and full evidence stored locally. This is an extractive adaptation, not a reproduction of AgentDiet. |
+| [Flow Engineering / AlphaCodium — Ridnik et al., 2024](https://arxiv.org/abs/2401.08500) | Separation of planning, execution, and tool-level verification. Rove is a desktop assistant, not AlphaCodium's coding system. |
+| [Provider prefix caching](https://developers.openai.com/api/docs/guides/prompt-caching) | Stable instructions and tool schemas, a cache key for the standard API, and reported cache-usage metrics. Actual cache hits depend on the provider. |
 
-## Try it
+**Next:** learn reusable procedures from successful tasks, inspired by [Agent Workflow Memory](https://arxiv.org/abs/2409.07429). User-created routines work today; automatic workflow learning is still planned.
 
-Rove is an early Windows app. For now, run it from source with **Node.js 24.15+** and **pnpm 11**:
+## What can I use it for?
+
+- Prepare a project workspace from a saved routine: its documents, reference links, and SSH workspace together.
+- Work through browser tasks with navigation, inspection, form editing, and checks between dependent steps.
+- Combine Windows actions and local resources in a natural-language task, with a question when the target is unclear.
+
+Rove is early software. It does not reliably automate every application or website yet.
+
+## Try it on Windows
+
+Install **Node.js 24.15+** and **pnpm 11**, then:
 
 ```powershell
 git clone https://github.com/hriship618/sidekick.git
@@ -34,25 +45,18 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open the launcher's **Settings** button to connect AI. Choose **Continue with ChatGPT** if your account supports access, or enter an OpenAI API key. API usage is billed separately. Simple local commands work without an AI connection.
+Use the launcher's **Settings** button to connect ChatGPT if your account supports access, or enter an OpenAI API key. API usage is billed separately. Open **Rove browser** in Settings for web tasks, and create repeatable workflows under **Saved routines**.
 
-For web tasks, open **Rove browser** in Settings. It uses a separate Microsoft Edge profile, where you can sign in to websites yourself.
+AI tasks send your request and relevant task information to OpenAI. History and full evidence stay locally; credentials use Windows protection where available. Rove is not fully offline.
 
-**Installer status:** packaging is set up, but Windows Smart App Control blocked the unsigned build on the development machine. A working signed installer is not available yet.
+**Installer:** Windows Smart App Control blocked the unsigned build on the development machine. A working signed installer is not available yet.
 
-## A few things to know
+## Results and development
 
-- AI tasks send your request and relevant task information to OpenAI. Rove is not fully offline.
-- Local history and logs stay on your PC. Credentials use Windows protection where available.
-- Escape hides the launcher without stopping a task. Use the tray menu to reopen or quit Rove.
-- This is early software. Check important results and expect rough edges.
+Local benchmarks showed a **141 ms median** warm app close with **zero model calls**, and a **7.0× faster** warm Windows helper than starting a fresh helper per action. These are small local measurements, not general task-speed or token-savings claims. Live provider savings remain unmeasured.
 
-## For developers
+`pnpm check` runs checks and tests. `pnpm benchmark` measures local performance without cloud requests.
 
-`pnpm check` runs checks, tests, and a build. `pnpm benchmark` measures local performance without cloud requests.
-
-[Development guide](docs/DEVELOPMENT.md) · [Benchmarks](docs/benchmarks/README.md) · [Architecture](docs/FLOW_ARCHITECTURE.md) · [Learning plan](docs/ACTION_GRAPH_PLAN.md)
-
-Local benchmarks are from a small test set, not a promise for every task. Live provider token savings and cache speedups have not been measured.
+[Benchmarks](docs/benchmarks/README.md) · [Research and implementation](docs/RESEARCH.md) · [Architecture](docs/FLOW_ARCHITECTURE.md) · [Development](docs/DEVELOPMENT.md) · [Learning plan](docs/ACTION_GRAPH_PLAN.md)
 
 [MIT license](LICENSE)

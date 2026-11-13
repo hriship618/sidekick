@@ -24,6 +24,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS trace (
         id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), at TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS trace_run_kind ON trace(run_id, kind);
       CREATE TABLE IF NOT EXISTS evidence (
         id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), kind TEXT NOT NULL, data BLOB NOT NULL
       );
@@ -124,6 +125,7 @@ export class Store {
   }
 
   trace(id: string, kind: string, data: unknown) {
+    if (['provider-request', 'provider-usage', 'graph-plan', 'trajectory-reduction', 'local-route', 'local-execution'].includes(kind)) this.recentCache = undefined;
     this.db.prepare('INSERT INTO trace (run_id, at, kind, data) VALUES (?, ?, ?, ?)')
       .run(id, new Date().toISOString(), kind, JSON.stringify(data));
   }
@@ -171,12 +173,25 @@ export class Store {
   recent(): Run[] {
     if (this.recentCache) return this.recentCache;
     const readSteps = this.db.prepare('SELECT label, tool, status, result, error FROM steps WHERE run_id = ? ORDER BY position');
+    const metrics = this.db.prepare(`SELECT COUNT(*) AS recorded,
+      SUM(kind = 'provider-request') AS modelCalls, SUM(kind = 'graph-plan') AS graphPlans,
+      SUM(CASE WHEN kind = 'provider-usage' THEN COALESCE(json_extract(data, '$.inputTokens'), 0) ELSE 0 END) AS inputTokens,
+      SUM(CASE WHEN kind = 'provider-usage' THEN COALESCE(json_extract(data, '$.cachedInputTokens'), 0) ELSE 0 END) AS cachedInputTokens,
+      SUM(CASE WHEN kind = 'provider-usage' THEN COALESCE(json_extract(data, '$.outputTokens'), 0) ELSE 0 END) AS outputTokens,
+      MAX(CASE WHEN kind = 'provider-usage' THEN COALESCE(json_extract(data, '$.usageReported'), 0) ELSE 0 END) AS usageReported,
+      SUM(CASE WHEN kind = 'trajectory-reduction' THEN MAX(0, json_extract(data, '$.originalChars') - json_extract(data, '$.modelChars')) ELSE 0 END) AS reducedChars
+      FROM trace WHERE run_id = ? AND kind IN ('provider-request', 'provider-usage', 'graph-plan', 'trajectory-reduction', 'local-route', 'local-execution')`);
     return this.recentCache = this.db.prepare('SELECT runs.*, description, routine, finished_at FROM runs LEFT JOIN run_metadata ON run_id = runs.id ORDER BY runs.rowid DESC LIMIT 20').all().map(row => ({
       id: String(row.id), command: String(row.command), createdAt: String(row.created_at),
       description: row.description ? String(row.description) : undefined,
       routine: row.routine ? String(row.routine) : undefined,
       finishedAt: row.finished_at ? String(row.finished_at) : undefined,
       status: row.status as Run['status'], message: String(row.message),
+      engine: (() => { const data = metrics.get(row.id)!; return Number(data.recorded) ? {
+        modelCalls: Number(data.modelCalls), graphPlans: Number(data.graphPlans), inputTokens: Number(data.inputTokens),
+        cachedInputTokens: Number(data.cachedInputTokens), outputTokens: Number(data.outputTokens),
+        usageReported: Boolean(data.usageReported), reducedChars: Number(data.reducedChars),
+      } : undefined; })(),
       steps: readSteps.all(row.id).map(step => ({
         label: String(step.label), tool: String(step.tool), status: step.status as Step['status'],
         result: step.result ? JSON.parse(String(step.result)) : undefined,

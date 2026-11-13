@@ -87,6 +87,12 @@ function Details({ run, element }: { run: Run; element?: React.RefObject<HTMLDet
       <p className="detail-command"><code>{run.command}</code></p>
       <p className="muted">Started <time dateTime={run.createdAt}>{started.toLocaleString()}</time>
         {elapsed !== undefined && ` · ${(elapsed / 1000).toFixed(2)} s`}</p>
+        {run.engine && <p className="muted" aria-label="Execution engine metrics">
+          {run.engine.modelCalls === 0 ? 'Executed locally · 0 model calls' : `${run.engine.modelCalls} model call${run.engine.modelCalls === 1 ? '' : 's'}`}
+          {run.engine.graphPlans > 0 && ` · ${run.engine.graphPlans} execution graph${run.engine.graphPlans === 1 ? '' : 's'}`}
+          {run.engine.usageReported && ` · ${run.engine.inputTokens.toLocaleString()} input tokens (${run.engine.cachedInputTokens.toLocaleString()} cached) · ${run.engine.outputTokens.toLocaleString()} output tokens`}
+          {run.engine.reducedChars > 0 && ` · ${run.engine.reducedChars.toLocaleString()} observation characters omitted from model context`}
+        </p>}
       <ol className="step-log">{run.steps.map((step, index) => <li key={index}>
         <div><strong>{step.label}</strong><small className={step.status}>{stepLabels[step.status]}</small></div>
         <code>{step.tool}</code>

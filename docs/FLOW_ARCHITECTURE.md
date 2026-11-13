@@ -2,6 +2,14 @@
 
 These modules extend the existing Windows Electron main process. No Python service, model download, graph database, or inference server is required.
 
+Research sources and the boundaries of each adaptation are documented in [RESEARCH.md](RESEARCH.md).
+
+## Executable graphs in the app
+
+`src/execution-graph.ts` is the shared dependency interpreter for saved launcher routines, existing batches, and the model's `execute_graph` tool. It checks the full graph before dispatch, orders prerequisites, executes validated actions sequentially, persists checkpoints, and blocks the remaining plan on failure. Browser nodes with dependents require expected-state checks. Completed nodes are returned explicitly, not silently replayed. Unknown targets are inspected and essential questions answered before compiling known actions into a graph. Tool verification remains authoritative: dispatching a URL or SSH launch does not establish page load or remote login.
+
+Execution details now displays recorded model calls, graph counts, provider-reported token/cache usage, and observation character reduction. Character reduction is not a claim about billed token savings. Automatic induction of new workflows remains planned.
+
 ## 1. Local graph router
 
 `src/local-router.ts` defines a directed prerequisite graph and a dependency-order traversal that rejects unknown prerequisites and cycles. Parameter nodes feed `Close-App`, `Open-Dir`, and `Volume-Up`. TF-IDF vectors are built once at module load and rank local intent candidates without network traffic.
